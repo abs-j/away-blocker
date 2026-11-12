@@ -168,6 +168,40 @@ fun HomeScreen() {
             }
         }
 
+        var hold by remember { mutableStateOf(Prefs.holdEnabled) }
+        var holdSched by remember { mutableStateOf(Prefs.holdScheduleEnabled) }
+        var hStart by remember { mutableIntStateOf(Prefs.holdStartMin) }
+        var hEnd by remember { mutableIntStateOf(Prefs.holdEndMin) }
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Hold notifications", Modifier.weight(1f), fontSize = 18.sp)
+                    Switch(checked = hold, onCheckedChange = { hold = it; Prefs.holdEnabled = it; TriageListener.syncNow() })
+                }
+                Text(
+                    when {
+                        !hold -> "Off: notifications arrive normally"
+                        Blocking.isHoldActive(now) -> "Holding now. Everything is hidden and comes back when the hold ends."
+                        else -> "On, outside schedule"
+                    }
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Only during a daily schedule", Modifier.weight(1f))
+                    Switch(checked = holdSched, onCheckedChange = { holdSched = it; Prefs.holdScheduleEnabled = it; TriageListener.syncNow() })
+                }
+                if (holdSched) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = {
+                            TimePickerDialog(ctx, { _, h, m -> hStart = h * 60 + m; Prefs.holdStartMin = hStart }, hStart / 60, hStart % 60, true).show()
+                        }) { Text("From ${fmtTime(hStart)}") }
+                        OutlinedButton(onClick = {
+                            TimePickerDialog(ctx, { _, h, m -> hEnd = h * 60 + m; Prefs.holdEndMin = hEnd }, hEnd / 60, hEnd % 60, true).show()
+                        }) { Text("To ${fmtTime(hEnd)}") }
+                    }
+                }
+            }
+        }
+
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Need a blocked app?", fontSize = 18.sp)

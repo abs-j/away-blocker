@@ -77,6 +77,24 @@ object Prefs {
         get() = sp.getInt("endMin", 17 * 60)
         set(v) = sp.edit().putInt("endMin", v).apply()
 
+    // Notification holding is independent of app blocking. Until first changed, each setting
+    // falls back to the matching blocking setting so existing installs keep their behaviour.
+    var holdEnabled: Boolean
+        get() = if (sp.contains("holdEnabled")) bool("holdEnabled", false) else enabled
+        set(v) = putBool("holdEnabled", v)
+
+    var holdScheduleEnabled: Boolean
+        get() = if (sp.contains("holdScheduleEnabled")) bool("holdScheduleEnabled", false) else scheduleEnabled
+        set(v) = putBool("holdScheduleEnabled", v)
+
+    var holdStartMin: Int
+        get() = if (sp.contains("holdStartMin")) sp.getInt("holdStartMin", 0) else startMin
+        set(v) = sp.edit().putInt("holdStartMin", v).apply()
+
+    var holdEndMin: Int
+        get() = if (sp.contains("holdEndMin")) sp.getInt("holdEndMin", 0) else endMin
+        set(v) = sp.edit().putInt("holdEndMin", v).apply()
+
     var unlockUntil: Long
         get() = sp.getLong("unlockUntil", 0L)
         set(v) = sp.edit().putLong("unlockUntil", v).apply()
@@ -230,6 +248,17 @@ object Blocking {
         val m = cal.get(java.util.Calendar.HOUR_OF_DAY) * 60 + cal.get(java.util.Calendar.MINUTE)
         val s = Prefs.startMin
         val e = Prefs.endMin
+        return if (s <= e) m in s until e else (m >= s || m < e)
+    }
+
+    /** True when notifications should currently be held. Separate from app blocking and its pause. */
+    fun isHoldActive(now: Long = System.currentTimeMillis()): Boolean {
+        if (!Prefs.holdEnabled) return false
+        if (!Prefs.holdScheduleEnabled) return true
+        val cal = java.util.Calendar.getInstance().apply { timeInMillis = now }
+        val m = cal.get(java.util.Calendar.HOUR_OF_DAY) * 60 + cal.get(java.util.Calendar.MINUTE)
+        val s = Prefs.holdStartMin
+        val e = Prefs.holdEndMin
         return if (s <= e) m in s until e else (m >= s || m < e)
     }
 

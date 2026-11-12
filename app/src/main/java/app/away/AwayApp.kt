@@ -18,10 +18,14 @@ class AwayApp : Application() {
         nm.createNotificationChannel(
             NotificationChannel(CH_URGENT, "Urgent alerts", NotificationManager.IMPORTANCE_HIGH)
         )
+        nm.createNotificationChannel(
+            NotificationChannel(CH_RESTORED, "Held notifications", NotificationManager.IMPORTANCE_LOW)
+        )
     }
 
     companion object {
         const val CH_INDICATOR = "indicator"
         const val CH_URGENT = "urgent"
+        const val CH_RESTORED = "restored"
     }
 }
