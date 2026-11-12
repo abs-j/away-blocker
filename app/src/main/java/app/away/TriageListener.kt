@@ -72,6 +72,8 @@ class TriageListener : NotificationListenerService() {
                 .setWhen(h.time)
                 .setShowWhen(true)
                 .setAutoCancel(true)
+                // A unique group per notification stops Android folding them under one Away bundle.
+                .setGroup("held_${h.key}")
             h.contentIntent?.let { b.setContentIntent(it) }
             nm.notify("held", h.key.hashCode(), b.build())
         }
@@ -92,7 +94,10 @@ class TriageListener : NotificationListenerService() {
         Notification.CATEGORY_SOCIAL,
         Notification.CATEGORY_RECOMMENDATION,
     )
-    private val ignoredPackages = setOf("android", "com.android.systemui", "com.android.providers.downloads")
+    private val ignoredPackages = setOf(
+        "android", "com.android.systemui", "com.android.providers.downloads",
+        "com.abs.circletochatgpt", // reply drafts and agent status from Circle to ChatGPT must stay visible
+    )
     private val otp = Regex(
         "(?i)\\b(otp|verification code|security code|one[- ]time (pass)?code|passcode|2fa|login code|code)\\b\\D{0,30}\\b\\d{4,8}\\b"
     )
