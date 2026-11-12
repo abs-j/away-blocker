@@ -32,7 +32,7 @@ class TriageListener : NotificationListenerService() {
     )
     private val ignoredPackages = setOf("android", "com.android.systemui", "com.android.providers.downloads")
     private val otp = Regex(
-        "(?i)\\b(otp|verification code|security code|one[- ]time (pass)?code|passcode|2fa|login code)\\b\\D{0,30}\\b\\d{4,8}\\b"
+        "(?i)\\b(otp|verification code|security code|one[- ]time (pass)?code|passcode|2fa|login code|code)\\b\\D{0,30}\\b\\d{4,8}\\b"
     )
     private val promoWords = Regex("(?i)promo|\\bsale\\b|% off|coupon|discount")
     private val lastTextByKey = HashMap<String, String>()

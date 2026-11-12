@@ -50,7 +50,41 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import android.util.Log
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.unit.Velocity
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -58,6 +92,9 @@ import java.util.Locale
 data class AppEntry(val pkg: String, val label: String)
 
 object Apps {
+    /** Last loaded app list so the home screen draws instantly; refreshed off the main thread. */
+    @Volatile var cache: List<AppEntry> = emptyList()
+
     fun loadAll(ctx: Context): List<AppEntry> {
         val pm = ctx.packageManager
         val i = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
@@ -83,7 +120,8 @@ object Apps {
             return false
         }
         val i = ctx.packageManager.getLaunchIntentForPackage(pkg) ?: return false
-        ctx.startActivity(i)
+        val fade = android.app.ActivityOptions.makeCustomAnimation(ctx, android.R.anim.fade_in, android.R.anim.fade_out)
+        ctx.startActivity(i, fade.toBundle())
         return true
     }
 
@@ -112,12 +150,38 @@ object Apps {
     }
 }
 
+/** Lock screen wallpaper if the OS lets us read it, else the home wallpaper is shown by the window itself. */
+object Wallpaper {
+    @Volatile var cached: androidx.compose.ui.graphics.ImageBitmap? = null
+
+    private fun open(wm: android.app.WallpaperManager, flag: Int) =
+        runCatching { wm.getWallpaperFile(flag) }.getOrNull()
+
+    fun load(ctx: Context): androidx.compose.ui.graphics.ImageBitmap? {
+        val wm = android.app.WallpaperManager.getInstance(ctx)
+        for (flag in intArrayOf(android.app.WallpaperManager.FLAG_LOCK, android.app.WallpaperManager.FLAG_SYSTEM)) {
+            val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            open(wm, flag)?.use { android.graphics.BitmapFactory.decodeFileDescriptor(it.fileDescriptor, null, bounds) }
+            if (bounds.outWidth <= 0) continue
+            var sample = 1
+            while (bounds.outWidth / (sample * 2) >= 1080) sample *= 2
+            val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }
+            val bmp = open(wm, flag)?.use {
+                android.graphics.BitmapFactory.decodeFileDescriptor(it.fileDescriptor, null, opts)
+            } ?: continue
+            return bmp.asImageBitmap().also { cached = it }
+        }
+        return null
+    }
+}
+
 class LauncherActivity : ComponentActivity() {
     private val resumes = mutableIntStateOf(0)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Prefs.init(this)
+        Thread { Apps.cache = Apps.loadAll(applicationContext) }.start()
         enableEdgeToEdge()
         setContent { LauncherRoot(resumes.intValue) }
     }
@@ -139,7 +203,23 @@ class LauncherActivity : ComponentActivity() {
     }
 }
 
-private val Dim = Color(0xFF8A8A8A)
+/** Text colour for everything drawn over the wallpaper: dark on bright wallpapers, white on dark ones. */
+val LocalInk = androidx.compose.runtime.compositionLocalOf { Color.White }
+
+private val Dim: Color @Composable get() = LocalInk.current.copy(alpha = 0.7f)
+
+fun wallpaperWantsDarkText(ctx: Context): Boolean {
+    val wm = android.app.WallpaperManager.getInstance(ctx)
+    val c = runCatching {
+        wm.getWallpaperColors(android.app.WallpaperManager.FLAG_LOCK)
+            ?: wm.getWallpaperColors(android.app.WallpaperManager.FLAG_SYSTEM)
+    }.getOrNull() ?: return false
+    return if (android.os.Build.VERSION.SDK_INT >= 31) {
+        c.colorHints and android.app.WallpaperColors.HINT_SUPPORTS_DARK_TEXT != 0
+    } else {
+        androidx.core.graphics.ColorUtils.calculateLuminance(c.primaryColor.toArgb()) > 0.6
+    }
+}
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -162,7 +242,23 @@ fun LauncherRoot(resumeRev: Int) {
     LaunchedEffect(resumeRev) { drawer = false; now = System.currentTimeMillis() }
 
     // Recomputed whenever the clock ticks, the activity resumes or an edit happens.
-    val all = remember(resumeRev, localRev) { Apps.loadAll(ctx) }
+    var all by remember { mutableStateOf(Apps.cache) }
+    LaunchedEffect(resumeRev) {
+        val fresh = withContext(Dispatchers.Default) { Apps.loadAll(ctx) }
+        Apps.cache = fresh
+        if (fresh != all) all = fresh
+    }
+    var darkInk by remember { mutableStateOf(wallpaperWantsDarkText(ctx)) }
+    LaunchedEffect(resumeRev) { darkInk = wallpaperWantsDarkText(ctx) }
+    val ink by animateColorAsState(if (darkInk) Color(0xFF111111) else Color.White, tween(250), label = "ink")
+    var wallpaper by remember { mutableStateOf(Wallpaper.cached) }
+    LaunchedEffect(resumeRev) {
+        val w = withContext(Dispatchers.Default) { Wallpaper.load(ctx) }
+        Log.d("AwayLauncher", "lock wallpaper loaded=${w != null}")
+        wallpaper = w
+    }
+    val haptic = LocalHapticFeedback.current
+    val homeAlpha by animateFloatAsState(if (drawer) 0f else 1f, tween(200), label = "homeAlpha")
     val renames = remember(resumeRev, localRev) { Prefs.renames }
     val visible = remember(now / 5000, resumeRev, localRev, all) { Apps.visible(all) }
     val byPkg = remember(visible) { visible.associateBy { it.pkg } }
@@ -183,10 +279,10 @@ fun LauncherRoot(resumeRev: Int) {
         ctx.startActivity(Intent(ctx, MainActivity::class.java).putExtra("tab", tab))
     }
 
+    CompositionLocalProvider(LocalInk provides ink) {
     Box(
         Modifier
             .fillMaxSize()
-            .background(Color.Black)
             .pointerInput(Unit) {
                 detectTapGestures(
                     onDoubleTap = {
@@ -194,7 +290,7 @@ fun LauncherRoot(resumeRev: Int) {
                             Toast.makeText(ctx, "Enable the Away accessibility service to lock", Toast.LENGTH_SHORT).show()
                         }
                     },
-                    onLongPress = { openAway(0) },
+                    onLongPress = { haptic.performHapticFeedback(HapticFeedbackType.LongPress); openAway(0) },
                 )
             }
             .pointerInput(Unit) {
@@ -204,19 +300,37 @@ fun LauncherRoot(resumeRev: Int) {
                     onDragStart = { dx = 0f; dy = 0f },
                     onDragEnd = {
                         when {
-                            -dy > 160 && -dy > Math.abs(dx) -> drawer = true
-                            dx < -160 && -dx > Math.abs(dy) ->
+                            -dy > 160 && -dy > Math.abs(dx) -> {
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); drawer = true
+                            }
+                            dx < -160 && -dx > Math.abs(dy) -> {
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                 swipeApp(Prefs.swipeLeftApp, Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA))
-                            dx > 160 && dx > Math.abs(dy) ->
+                            }
+                            dx > 160 && dx > Math.abs(dy) -> {
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                 swipeApp(Prefs.swipeRightApp, Intent(Intent.ACTION_DIAL))
+                            }
                         }
                     },
                 ) { _, d -> dx += d.x; dy += d.y }
             }
-            .systemBarsPadding(),
+            ,
     ) {
+        wallpaper?.let {
+            androidx.compose.foundation.Image(
+                bitmap = it, contentDescription = null,
+                contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+        // Scrim keeps white text readable on any wallpaper.
         val pinned = Prefs.pinned.mapNotNull { byPkg[it] }.let { if (focus) it.take(FOCUS_LIMIT) else it }
-        Column(Modifier.fillMaxSize().padding(horizontal = 28.dp, vertical = 24.dp)) {
+        Column(
+            Modifier.fillMaxSize().graphicsLayer { alpha = homeAlpha }
+                .systemBarsPadding()
+                .padding(horizontal = 28.dp, vertical = 24.dp),
+        ) {
             Text(
                 SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(now)),
                 fontSize = 64.sp, fontWeight = FontWeight.Light,
@@ -243,7 +357,7 @@ fun LauncherRoot(resumeRev: Int) {
                 )
             }
             Column(
-                Modifier.weight(1f).fillMaxWidth(),
+                Modifier.weight(1f).fillMaxWidth().animateContentSize(tween(220)),
                 verticalArrangement = Arrangement.Center,
             ) {
                 if (pinned.isEmpty()) {
@@ -251,24 +365,26 @@ fun LauncherRoot(resumeRev: Int) {
                 }
                 pinned.forEach { app ->
                     val d = Prefs.delays[app.pkg] ?: 0
-                    Text(
+                    PressableText(
                         Apps.displayName(app, renames) + if (d > 0) " ·${d}s" else "",
-                        Modifier.fillMaxWidth().combinedClickable(
-                            onClick = { go(app) },
-                            onLongClick = { menuApp = app },
-                        ).padding(vertical = 10.dp),
                         fontSize = 28.sp,
+                        onClick = { go(app) },
+                        onLong = { haptic.performHapticFeedback(HapticFeedbackType.LongPress); menuApp = app },
                     )
                 }
             }
         }
 
-        if (drawer) {
+        AnimatedVisibility(
+            visible = drawer,
+            enter = fadeIn(tween(180)) + slideInVertically(tween(260, easing = FastOutSlowInEasing)) { it / 8 },
+            exit = fadeOut(tween(130)) + slideOutVertically(tween(160)) { it / 10 },
+        ) {
             Drawer(
                 apps = visible,
                 renames = renames,
                 onLaunch = { drawer = false; go(it) },
-                onLong = { menuApp = it },
+                onLong = { haptic.performHapticFeedback(HapticFeedbackType.LongPress); menuApp = it },
                 onClose = { drawer = false },
             )
         }
@@ -284,16 +400,27 @@ fun LauncherRoot(resumeRev: Int) {
                 }
             }
             BackHandler { pending = null }
-            Column(
-                Modifier.fillMaxSize().background(Color.Black).pointerInput(Unit) { detectTapGestures { } },
-                verticalArrangement = Arrangement.Center,
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Text("Opening ${Apps.displayName(app, renames)}", fontSize = 22.sp)
-                Text("$secs", fontSize = 72.sp, fontWeight = FontWeight.Light, modifier = Modifier.padding(vertical = 16.dp))
-                TextButton(onClick = { pending = null }) { Text("Never mind", color = Color.White, fontSize = 18.sp) }
+            CompositionLocalProvider(LocalInk provides Color.White) {
+            AnimatedVisibility(visible = true, enter = fadeIn(tween(200))) {
+                Column(
+                    Modifier.fillMaxSize().background(Color.Black).pointerInput(Unit) { detectTapGestures { } },
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text("Opening ${Apps.displayName(app, renames)}", fontSize = 22.sp)
+                    AnimatedContent(
+                        targetState = secs,
+                        transitionSpec = { fadeIn(tween(160)) togetherWith fadeOut(tween(100)) },
+                        label = "countdown",
+                    ) { s ->
+                        Text("$s", fontSize = 72.sp, fontWeight = FontWeight.Light, modifier = Modifier.padding(vertical = 16.dp))
+                    }
+                    TextButton(onClick = { pending = null }) { Text("Never mind", color = Color.White, fontSize = 18.sp) }
+                }
+            }
             }
         }
+    }
     }
 
     menuApp?.let { app ->
@@ -359,10 +486,19 @@ private const val FOCUS_LIMIT = 4
 private fun Text(
     text: String,
     modifier: Modifier = Modifier,
-    color: Color = Color.White,
+    color: Color = Color.Unspecified,
     fontSize: androidx.compose.ui.unit.TextUnit = 16.sp,
     fontWeight: FontWeight? = null,
-) = androidx.compose.material3.Text(text, modifier, color = color, fontSize = fontSize, fontWeight = fontWeight)
+) {
+    val ink = LocalInk.current
+    val c = if (color == Color.Unspecified) ink else color
+    // Soft halo in the opposite tone keeps text readable over busy wallpaper.
+    val halo = if (c.luminance() > 0.5f) Color.Black.copy(alpha = 0.45f) else Color.White.copy(alpha = 0.35f)
+    androidx.compose.material3.Text(
+        text, modifier, color = c, fontSize = fontSize, fontWeight = fontWeight,
+        style = TextStyle(shadow = androidx.compose.ui.graphics.Shadow(halo, Offset(0f, 2f), 10f)),
+    )
+}
 
 @Composable
 private fun MenuItem(label: String, onClick: () -> Unit) {
@@ -391,6 +527,7 @@ private fun Drawer(
 
     BackHandler(onBack = onClose)
     LaunchedEffect(Unit) { focusReq.requestFocus(); kb?.show() }
+    DisposableEffect(Unit) { onDispose { kb?.hide() } }
     // A lone match opens after a short pause; typing another character cancels it.
     LaunchedEffect(query, matches) {
         if (query.trim().length >= 2 && matches.size == 1) {
@@ -399,15 +536,41 @@ private fun Drawer(
         }
     }
 
+    // Swipe down anywhere in the drawer (list at top, or list too short to scroll) returns to home.
+    val swipeDown = remember {
+        object : NestedScrollConnection {
+            var acc = 0f
+            override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
+                if (available.y > 0f) acc += available.y else if (consumed.y != 0f) acc = 0f
+                return Offset.Zero
+            }
+
+            override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
+                val close = acc > 120f
+                acc = 0f
+                if (close) onClose()
+                return Velocity.Zero
+            }
+        }
+    }
     Column(
-        Modifier.fillMaxSize().background(Color.Black).systemBarsPadding().padding(horizontal = 28.dp, vertical = 16.dp),
+        Modifier.fillMaxSize()
+            .nestedScroll(swipeDown)
+            .pointerInput(Unit) {
+                var total = 0f
+                detectVerticalDragGestures(
+                    onDragStart = { total = 0f },
+                    onDragEnd = { if (total > 160f) onClose() },
+                ) { _, d -> total += d }
+            }
+            .systemBarsPadding().padding(horizontal = 28.dp, vertical = 16.dp),
     ) {
         Box(Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
             if (query.isEmpty()) Text("search apps", color = Dim, fontSize = 28.sp)
             BasicTextField(
                 value = query, onValueChange = { query = it }, singleLine = true,
-                textStyle = TextStyle(color = Color.White, fontSize = 28.sp),
-                cursorBrush = SolidColor(Color.White),
+                textStyle = TextStyle(color = LocalInk.current, fontSize = 28.sp),
+                cursorBrush = SolidColor(LocalInk.current),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
                 keyboardActions = KeyboardActions(onGo = { matches.firstOrNull()?.let(onLaunch) }),
                 modifier = Modifier.fillMaxWidth().focusRequester(focusReq),
@@ -415,16 +578,36 @@ private fun Drawer(
         }
         LazyColumn(Modifier.fillMaxSize()) {
             items(matches, key = { it.pkg }) { app ->
-                androidx.compose.foundation.layout.Box(
-                    Modifier.fillMaxWidth().combinedClickableCompat2(
-                        onClick = { onLaunch(app) }, onLong = { onLong(app) },
-                    ).padding(vertical = 10.dp),
-                ) { Text(Apps.displayName(app, renames), fontSize = 24.sp) }
+                PressableText(
+                    Apps.displayName(app, renames), fontSize = 24.sp,
+                    onClick = { onLaunch(app) }, onLong = { onLong(app) },
+                    modifier = Modifier.animateItem(),
+                )
             }
         }
     }
 }
 
+/** Plain text row that dips slightly while pressed. */
 @OptIn(ExperimentalFoundationApi::class)
-private fun Modifier.combinedClickableCompat2(onClick: () -> Unit, onLong: () -> Unit) =
-    this.combinedClickable(onClick = onClick, onLongClick = onLong)
+@Composable
+private fun PressableText(
+    label: String,
+    fontSize: androidx.compose.ui.unit.TextUnit,
+    onClick: () -> Unit,
+    onLong: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val src = remember { MutableInteractionSource() }
+    val pressed by src.collectIsPressedAsState()
+    val scale by animateFloatAsState(if (pressed) 0.96f else 1f, spring(stiffness = Spring.StiffnessMedium), label = "scale")
+    val a by animateFloatAsState(if (pressed) 0.6f else 1f, tween(90), label = "alpha")
+    Text(
+        label,
+        modifier.fillMaxWidth()
+            .graphicsLayer { scaleX = scale; scaleY = scale; alpha = a; transformOrigin = TransformOrigin(0f, 0.5f) }
+            .combinedClickable(interactionSource = src, indication = null, onClick = onClick, onLongClick = onLong)
+            .padding(vertical = 10.dp),
+        fontSize = fontSize,
+    )
+}

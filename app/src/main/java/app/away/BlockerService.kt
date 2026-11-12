@@ -123,6 +123,7 @@ class BlockerService : AccessibilityService() {
         if (pkg == "com.android.systemui" || IME_HINTS.any { pkg.contains(it, ignoreCase = true) }) return
         if (pkg != currentPkg) fgSince = System.currentTimeMillis()
         currentPkg = pkg
+        updatePill()
         if (pkg == packageName) return
         val now = System.currentTimeMillis()
         if (Blocking.shouldBlock(pkg, now)) {
@@ -337,6 +338,8 @@ class BlockerService : AccessibilityService() {
 
     private fun updatePill() {
         pill?.text = label()
+        // Away's own screens (launcher home, settings) already show the counter.
+        pill?.visibility = if (currentPkg == packageName) View.GONE else View.VISIBLE
     }
 
     private fun postIndicatorNotification() {
