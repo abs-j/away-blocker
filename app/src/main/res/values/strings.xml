@@ -1,0 +1,3 @@
+<resources>
+    <string name="a11y_description">Detects when a blocked app opens, sends you Home, and closes the app from the Recents screen. Away only looks at the Recents screen to find the blocked app card.</string>
+</resources>
