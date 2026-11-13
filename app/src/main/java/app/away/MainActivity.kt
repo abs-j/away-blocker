@@ -121,13 +121,21 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        if (Build.VERSION.SDK_INT >= 33 &&
+        // People who set Away up before onboarding existed skip it.
+        if (!Prefs.onboardedKnown && a11yEnabled(this)) Prefs.onboarded = true
+        if (Prefs.onboarded && Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         }
         val startTab = intent.getIntExtra("tab", 0)
-        setContent { AwayTheme { App(startTab) } }
+        setContent {
+            AwayTheme {
+                var onboarded by remember { mutableStateOf(Prefs.onboarded) }
+                if (onboarded) App(startTab, onRunSetup = { Prefs.onboarded = false; onboarded = false })
+                else Onboarding(onDone = { Prefs.onboarded = true; onboarded = true })
+            }
+        }
     }
 }
 
@@ -157,13 +165,13 @@ private val TABS = listOf(
     Tab("Focus", Icons.Filled.Lock, Icons.Outlined.Lock),
     Tab("Apps", Icons.Filled.List, Icons.Outlined.List),
     Tab("Digest", Icons.Filled.Notifications, Icons.Outlined.Notifications),
-    Tab("AI", Icons.Filled.Star, Icons.Outlined.Star),
+    Tab("Triage", Icons.Filled.Star, Icons.Outlined.Star),
     Tab("Launcher", Icons.Filled.Home, Icons.Outlined.Home),
 )
 
 /** Five screens you can swipe between; the bottom bar follows the swipe and jumps on tap. */
 @Composable
-fun App(startTab: Int = 0) {
+fun App(startTab: Int = 0, onRunSetup: () -> Unit = {}) {
     val pager = rememberPagerState(initialPage = startTab.coerceIn(0, TABS.lastIndex)) { TABS.size }
     val scope = rememberCoroutineScope()
     val haptic = LocalHapticFeedback.current
@@ -191,7 +199,7 @@ fun App(startTab: Int = 0) {
             beyondViewportPageCount = 1,
         ) { page ->
             when (page) {
-                0 -> HomeScreen()
+                0 -> HomeScreen(onRunSetup)
                 1 -> AppsScreen()
                 2 -> DigestScreen()
                 3 -> AiScreen()
@@ -309,13 +317,13 @@ private fun Pill(text: String, container: Color, content: Color) {
     )
 }
 
-private fun a11yEnabled(ctx: Context): Boolean {
+fun a11yEnabled(ctx: Context): Boolean {
     val s = Settings.Secure.getString(ctx.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: return false
     val me = ComponentName(ctx, BlockerService::class.java).flattenToString()
     return s.split(':').any { it.equals(me, ignoreCase = true) }
 }
 
-private fun listenerEnabled(ctx: Context) =
+fun listenerEnabled(ctx: Context) =
     NotificationManagerCompat.getEnabledListenerPackages(ctx).contains(ctx.packageName)
 
 private fun fmtTime(min: Int) = "%02d:%02d".format(min / 60, min % 60)
@@ -327,7 +335,7 @@ private fun clock(ms: Long) = SimpleDateFormat("HH:mm", Locale.getDefault()).for
 // ---------------------------------------------------------------------------------------------
 
 @Composable
-fun HomeScreen() {
+fun HomeScreen(onRunSetup: () -> Unit = {}) {
     val ctx = LocalContext.current
     val cs = MaterialTheme.colorScheme
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
@@ -395,7 +403,11 @@ fun HomeScreen() {
                 )
                 Spacer(Modifier.height(12.dp))
                 Pill(
-                    if (active) "Focus on" else "Focus off",
+                    when {
+                        active -> "Focus on"
+                        enabled && sched -> "Focus starts ${fmtTime(start)}"
+                        else -> "Focus off"
+                    },
                     container = if (active) cs.primary else cs.surfaceContainerHigh,
                     content = if (active) cs.onPrimary else cs.onSurfaceVariant,
                 )
@@ -473,16 +485,16 @@ fun HomeScreen() {
                         Text("Finish setup", style = MaterialTheme.typography.titleMedium)
                     }
                     if (!a11y) PermRow("Accessibility", "Blocking, the home timer and the lock screen timer") {
-                        ctx.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                        safeStart(ctx, Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
                     } else if (!a11yRunning) PermRow(
                         "Accessibility is on but not running",
                         "Android did not restart Away after an update. Turn Away off and on again, or restart the phone.",
                         action = "Open",
                     ) {
-                        ctx.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                        safeStart(ctx, Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
                     }
                     if (!listener) PermRow("Notification access", "Holding and triage") {
-                        ctx.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+                        safeStart(ctx, Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
                     }
                     Text(
                         "Toggles greyed out? Open App info, tap the three-dot menu, choose Allow restricted settings.",
@@ -493,11 +505,14 @@ fun HomeScreen() {
         }
 
         // Troubleshooting links, kept quiet at the bottom.
+        var about by remember { mutableStateOf(false) }
+        if (about) AboutDialog(onDismiss = { about = false }, onRunSetup = { about = false; onRunSetup() })
         Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.Center) {
+            TextButton(onClick = { about = true }) { Text("About") }
             TextButton(onClick = {
-                ctx.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.fromParts("package", ctx.packageName, null)))
+                safeStart(ctx, Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.fromParts("package", ctx.packageName, null)))
             }) { Text("App info") }
-            TextButton(onClick = { ctx.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) }) {
+            TextButton(onClick = { safeStart(ctx, Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) }) {
                 Text("Battery settings")
             }
         }
@@ -579,6 +594,36 @@ private fun StatCell(label: String, value: String, modifier: Modifier = Modifier
         Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
+
+@Composable
+private fun AboutDialog(onDismiss: () -> Unit, onRunSetup: () -> Unit) {
+    val ctx = LocalContext.current
+    val version = remember { runCatching { ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName }.getOrNull() ?: "" }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { AppMark(56) },
+        title = { Text("Away $version") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Spend less time on your phone, without missing what matters.")
+                Text(
+                    "Everything stays on your phone. Notification text is only sent out if you add your own AI key, " +
+                        "and then only to that provider, with numbers, emails and links removed.",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+        dismissButton = {
+            Row {
+                TextButton(onClick = { safeStart(ctx, Intent(Intent.ACTION_VIEW, android.net.Uri.parse(PROJECT_URL))) }) { Text("Website") }
+                TextButton(onClick = onRunSetup) { Text("Run setup again") }
+            }
+        },
+    )
+}
+
+const val PROJECT_URL = "https://github.com/abs-j/away-blocker"
 
 @Composable
 private fun PermRow(title: String, why: String, action: String = "Enable", onOpen: () -> Unit) {
@@ -720,7 +765,7 @@ fun DigestScreen() {
                 },
             ) {
                 val launch = remember(d.pkg) { d.pkg.takeIf { it.isNotBlank() }?.let { ctx.packageManager.getLaunchIntentForPackage(it) } }
-                Panel(Modifier.clip(RoundedCornerShape(24.dp)).clickable(enabled = launch != null) { launch?.let { ctx.startActivity(it) } }) {
+                Panel(Modifier.clip(RoundedCornerShape(24.dp)).clickable(enabled = launch != null) { launch?.let { safeStart(ctx, it) } }) {
                     Column(Modifier.padding(horizontal = 20.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
@@ -754,16 +799,27 @@ fun AiScreen() {
     val openRouter = key.startsWith("sk-or-")
     val defaultModel = if (openRouter) "openai/gpt-4o-mini" else "claude-haiku-5-5"
     val provider = when {
-        key.isBlank() -> "Add an API key below"
+        key.isBlank() -> "Optional. Add your own key below"
         openRouter -> "OpenRouter · ${model.ifBlank { defaultModel }}"
         else -> "Anthropic · ${model.ifBlank { defaultModel }}"
     }
     val calls = Prefs.callsToday()
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(PagePad)) {
-        PageHeader("AI triage", "Decides which held notifications are urgent")
+        PageHeader("Triage", "Decides which held notifications are urgent enough to come through")
         Panel {
-            ToggleRow("Classify with AI", provider, on && key.isNotBlank(), enabled = key.isNotBlank()) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f).padding(end = 12.dp)) {
+                    Text("On-device rules", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Codes, VIPs, calls to call back, emergencies, travel and security alerts. Free and private.",
+                        style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant,
+                    )
+                }
+                Pill("Always on", cs.primary, cs.onPrimary)
+            }
+            Divider()
+            ToggleRow("AI for everything else", provider, on && key.isNotBlank(), enabled = key.isNotBlank()) {
                 on = it; Prefs.triageEnabled = it
             }
             Divider()
@@ -818,7 +874,7 @@ fun AiScreen() {
         }
 
         Text(
-            "Notification text is sent to your provider with numbers, emails and links removed. Verification codes and VIPs are detected on the phone.",
+            "With AI on, notification text is sent to your chosen provider with numbers, emails and links removed. Private apps and everything the rules catch never leave the phone.",
             Modifier.padding(horizontal = 4.dp, vertical = 16.dp),
             style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant,
         )
@@ -834,7 +890,7 @@ private enum class PickFor(val title: String) {
     LEFT("Swipe left opens"), RIGHT("Swipe right opens"),
 }
 
-private fun isDefaultHome(ctx: Context): Boolean =
+fun isDefaultHome(ctx: Context): Boolean =
     runCatching { ctx.getSystemService(RoleManager::class.java).isRoleHeld(RoleManager.ROLE_HOME) }
         .getOrDefault(false)
 
@@ -872,8 +928,8 @@ fun LauncherSettingsScreen() {
                     if (isHome) "Away is your home screen" else "Away is not your home screen",
                     if (isHome) "Press Home to see it" else "Set it as the default home app",
                 ) {
-                    if (isHome) TextButton(onClick = { ctx.startActivity(Intent(Settings.ACTION_HOME_SETTINGS)) }) { Text("Change") }
-                    else Button(onClick = { ctx.startActivity(Intent(Settings.ACTION_HOME_SETTINGS)) }) { Text("Set") }
+                    if (isHome) TextButton(onClick = { safeStart(ctx, Intent(Settings.ACTION_HOME_SETTINGS)) }) { Text("Change") }
+                    else Button(onClick = { safeStart(ctx, Intent(Settings.ACTION_HOME_SETTINGS)) }) { Text("Set") }
                 }
             }
         }

@@ -102,7 +102,7 @@ class TriageListener : NotificationListenerService() {
         val nm = getSystemService(NotificationManager::class.java)
         items.forEach { h ->
             val b = Notification.Builder(this, AwayApp.CH_RESTORED)
-                .setSmallIcon(h.icon ?: Icon.createWithResource(this, android.R.drawable.stat_notify_chat))
+                .setSmallIcon(h.icon ?: Icon.createWithResource(this, R.drawable.ic_stat_away))
                 .setContentTitle(h.title.ifBlank { h.app })
                 .setContentText(h.text)
                 .setSubText(h.app)
@@ -146,6 +146,23 @@ class TriageListener : NotificationListenerService() {
         "(?i)\\b(otp|verification code|security code|one[- ]time (pass)?code|passcode|2fa|login code|code)\\b\\D{0,30}\\b\\d{4,8}\\b"
     )
     private val promoWords = Regex("(?i)promo|\\bsale\\b|% off|coupon|discount")
+
+    /**
+     * On-device urgency rules, used when no AI key is set (and as a quick path before the AI).
+     * Each pattern is a time-sensitive situation; the label becomes the digest reason.
+     */
+    private val urgentRules = listOf(
+        "emergency" to Regex("(?i)\\b(emergency|urgent|asap|ambulance|hospital|accident)\\b"),
+        "asks you to call" to Regex("(?i)\\b(call me|call back|ring me|pick up|answer your phone|are you (ok|okay|there))\\b"),
+        "needs you now" to Regex("(?i)\\b(right now|come (now|quick|asap)|where are you|need you|help me)\\b"),
+        "travel change" to Regex("(?i)\\b(gate (change|changed)|boarding|flight (delayed|cancell?ed)|your (driver|ride|uber) is (here|arriving)|delivery (is )?arriving)\\b"),
+        "security alert" to Regex("(?i)\\b(fraud|suspicious|unusual (activity|sign.?in)|declined|security alert|new (sign.?in|login))\\b"),
+    )
+
+    private fun ruleVerdict(combined: String): Verdict? {
+        if (promoWords.containsMatchIn(combined)) return null
+        return urgentRules.firstOrNull { it.second.containsMatchIn(combined) }?.let { Verdict(true, it.first) }
+    }
     private val lastTextByKey = HashMap<String, String>()
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
@@ -210,7 +227,7 @@ class TriageListener : NotificationListenerService() {
         val h = synchronized(held) { held.remove(key) } ?: return
         persist()
         val b = Notification.Builder(this, AwayApp.CH_URGENT)
-            .setSmallIcon(h.icon ?: Icon.createWithResource(this, android.R.drawable.stat_notify_chat))
+            .setSmallIcon(h.icon ?: Icon.createWithResource(this, R.drawable.ic_stat_away))
             .setContentTitle(h.title.ifBlank { h.app })
             .setContentText(h.text)
             .setSubText("${h.app} · urgent: $reason")
@@ -233,14 +250,18 @@ class TriageListener : NotificationListenerService() {
 
         val vips = Prefs.vipList()
         val vipHit = vips.any { combined.contains(it, ignoreCase = true) }
+        if (vipHit) return Verdict(true, "VIP contact")
+        val rule = ruleVerdict(combined)
         val key = Prefs.apiKey
-        if (!Prefs.triageEnabled || key.isBlank()) return Verdict(vipHit, if (vipHit) "VIP contact" else "AI off")
-        if (pkg in Prefs.privateSet()) return Verdict(vipHit, if (vipHit) "VIP contact" else "private app, not sent to AI")
-
+        // Without AI (or for private apps), the on-device rules decide.
+        // A rule match is decided on the phone and never sent to the AI.
+        if (rule != null) return rule
+        if (!Prefs.triageEnabled || key.isBlank() || pkg in Prefs.privateSet()) {
+            return Verdict(false, "not urgent (on-device rules)")
+        }
         val v = Haiku.classify(app, title, text, vips, key)
         if (v != null) return v
-        // Fail-safe: AI unavailable.
-        return Verdict(vipHit, if (vipHit) "VIP contact (AI unavailable)" else "AI unavailable")
+        return Verdict(false, "not urgent (AI unavailable)")
     }
 
     companion object {

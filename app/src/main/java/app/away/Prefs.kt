@@ -83,6 +83,14 @@ object Prefs {
     private fun bool(k: String, d: Boolean) = sp.getBoolean(k, d)
     private fun putBool(k: String, v: Boolean) = sp.edit().putBoolean(k, v).apply()
 
+    /** True once first-run setup has been finished. */
+    var onboarded: Boolean
+        get() = bool("onboarded", false)
+        set(v) = putBool("onboarded", v)
+
+    /** False until onboarding has been completed or reset at least once (distinguishes upgrades). */
+    val onboardedKnown: Boolean get() = sp.contains("onboarded")
+
     /** Focus mode on/off. Stored under the original blocking key. */
     var enabled: Boolean
         get() = bool("enabled", false)

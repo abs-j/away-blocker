@@ -1,3 +1,6 @@
 <resources>
-    <string name="a11y_description">Detects when a blocked app opens, sends you Home, and closes the app from the Recents screen. Away only looks at the Recents screen to find the blocked app card.</string>
+    <string name="app_name">Away</string>
+    <string name="a11y_label">Away</string>
+    <string name="listener_label">Away notification hold</string>
+    <string name="a11y_description">Away uses Accessibility to see which app is opening, so it can block the distracting apps you chose during Focus, count how long you stay away from them, and lock the screen when you double tap the home screen. It only looks at which app is in front, the app names you tap on a home screen, and the Recents screen (to close blocked apps). It never reads what you type, your messages or your screen content, and nothing is sent off your phone.</string>
 </resources>

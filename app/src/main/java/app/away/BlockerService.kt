@@ -94,7 +94,6 @@ class BlockerService : AccessibilityService() {
      */
     private fun preempt(event: AccessibilityEvent) {
         val pkg = event.packageName?.toString() ?: return
-        Log.d("Away", "click pkg=$pkg desc=${event.contentDescription} text=${event.text} srcText=${event.source?.text} srcDesc=${event.source?.contentDescription}")
         if (pkg == packageName || quitting) return
         if (!pkg.contains("launcher", ignoreCase = true) && pkg != homePackage()) return
         val now = System.currentTimeMillis()
@@ -106,7 +105,6 @@ class BlockerService : AccessibilityService() {
         val labels = blockedLabels
         val hit = tapped.any { t -> t in labels || labels.any { t.startsWith("$it,") } }
         if (!hit) return
-        Log.d("Away", "preempt shield for $tapped")
         showShield()
         handler.removeCallbacks(preemptHide)
         handler.postDelayed(preemptHide, 3000) // if no block follows (launch failed), drop it
@@ -369,7 +367,7 @@ class BlockerService : AccessibilityService() {
             this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE,
         )
         val b = Notification.Builder(this, AwayApp.CH_INDICATOR)
-            .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
+            .setSmallIcon(R.drawable.ic_stat_away)
             .setContentTitle(title)
             .setContentText(if (unlocked) "Timer restarts when you put it down" else "Since you last used your phone")
             .setOngoing(true)

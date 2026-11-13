@@ -37,6 +37,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
@@ -440,60 +441,66 @@ fun LauncherRoot(resumeRev: Int) {
     }
     }
 
+    // Dialogs use the same dark theme as Away's settings.
     menuApp?.let { app ->
         val isPinned = app.pkg in Prefs.pinned
         val delaySecs = Prefs.delays[app.pkg] ?: 0
-        AlertDialog(
-            onDismissRequest = { menuApp = null },
-            confirmButton = {},
-            title = { Text(Apps.displayName(app, renames), color = Color.Black) },
-            text = {
-                Column {
-                    MenuItem(if (isPinned) "Unpin from home" else "Pin to home") {
-                        Prefs.pinned = if (isPinned) Prefs.pinned - app.pkg else Prefs.pinned + app.pkg
-                        menuApp = null; localRev++
+        AwayTheme {
+            AlertDialog(
+                onDismissRequest = { menuApp = null },
+                confirmButton = { TextButton(onClick = { menuApp = null }) { M3Text("Close") } },
+                title = { M3Text(Apps.displayName(app, renames)) },
+                text = {
+                    Column {
+                        MenuItem(if (isPinned) "Unpin from home" else "Pin to home") {
+                            Prefs.pinned = if (isPinned) Prefs.pinned - app.pkg else Prefs.pinned + app.pkg
+                            menuApp = null; localRev++
+                        }
+                        MenuItem("Rename") { renaming = app; menuApp = null }
+                        MenuItem("Launch delay: ${if (delaySecs == 0) "off" else "${delaySecs}s"}") {
+                            val next = when (delaySecs) { 0 -> 5; 5 -> 10; 10 -> 15; else -> 0 }
+                            Prefs.delays = Prefs.delays.toMutableMap().also { if (next == 0) it.remove(app.pkg) else it[app.pkg] = next }
+                            menuApp = null; localRev++
+                        }
+                        MenuItem("Swipe left opens this") { Prefs.swipeLeftApp = app.pkg; menuApp = null }
+                        MenuItem("Swipe right opens this") { Prefs.swipeRightApp = app.pkg; menuApp = null }
+                        MenuItem("Hide from search") {
+                            Prefs.hidden = Prefs.hidden + app.pkg
+                            Prefs.pinned = Prefs.pinned - app.pkg
+                            menuApp = null; localRev++
+                        }
                     }
-                    MenuItem("Rename") { renaming = app; menuApp = null }
-                    MenuItem("Launch delay: ${if (delaySecs == 0) "off" else "${delaySecs}s"}") {
-                        val next = when (delaySecs) { 0 -> 5; 5 -> 10; 10 -> 15; else -> 0 }
-                        Prefs.delays = Prefs.delays.toMutableMap().also { if (next == 0) it.remove(app.pkg) else it[app.pkg] = next }
-                        menuApp = null; localRev++
-                    }
-                    MenuItem("Swipe left opens this") { Prefs.swipeLeftApp = app.pkg; menuApp = null }
-                    MenuItem("Swipe right opens this") { Prefs.swipeRightApp = app.pkg; menuApp = null }
-                    MenuItem("Hide (restore in Away settings)") {
-                        Prefs.hidden = Prefs.hidden + app.pkg
-                        Prefs.pinned = Prefs.pinned - app.pkg
-                        menuApp = null; localRev++
-                    }
-                }
-            },
-        )
+                },
+            )
+        }
     }
 
     renaming?.let { app ->
         var name by remember(app.pkg) { mutableStateOf(Apps.displayName(app, renames)) }
-        AlertDialog(
-            onDismissRequest = { renaming = null },
-            title = { Text("Rename", color = Color.Black) },
-            text = {
-                BasicTextField(
-                    value = name, onValueChange = { name = it }, singleLine = true,
-                    textStyle = TextStyle(color = Color.Black, fontSize = 20.sp),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    val n = name.trim()
-                    Prefs.renames = Prefs.renames.toMutableMap().also {
-                        if (n.isEmpty() || n == app.label) it.remove(app.pkg) else it[app.pkg] = n
-                    }
-                    renaming = null; localRev++
-                }) { Text("Save", color = Color.Black) }
-            },
-            dismissButton = { TextButton(onClick = { renaming = null }) { Text("Cancel", color = Color.Black) } },
-        )
+        AwayTheme {
+            AlertDialog(
+                onDismissRequest = { renaming = null },
+                title = { M3Text("Rename") },
+                text = {
+                    androidx.compose.material3.OutlinedTextField(
+                        value = name, onValueChange = { name = it }, singleLine = true,
+                        supportingText = { M3Text("Leave blank to use the original name") },
+                        shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        val n = name.trim()
+                        Prefs.renames = Prefs.renames.toMutableMap().also {
+                            if (n.isEmpty() || n == app.label) it.remove(app.pkg) else it[app.pkg] = n
+                        }
+                        renaming = null; localRev++
+                    }) { M3Text("Save") }
+                },
+                dismissButton = { TextButton(onClick = { renaming = null }) { M3Text("Cancel") } },
+            )
+        }
     }
 }
 
@@ -521,10 +528,15 @@ private fun Text(
 private fun MenuItem(label: String, onClick: () -> Unit) {
     androidx.compose.material3.Text(
         label,
-        Modifier.fillMaxWidth().combinedClickableCompat(onClick).padding(vertical = 12.dp),
-        color = Color.Black, fontSize = 17.sp,
+        Modifier.fillMaxWidth().clip(androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
+            .combinedClickableCompat(onClick).padding(horizontal = 4.dp, vertical = 14.dp),
+        style = androidx.compose.material3.MaterialTheme.typography.bodyLarge,
     )
 }
+
+/** Plain Material text for dialogs, without the wallpaper halo. */
+@Composable
+private fun M3Text(text: String) = androidx.compose.material3.Text(text)
 
 @OptIn(ExperimentalFoundationApi::class)
 private fun Modifier.combinedClickableCompat(onClick: () -> Unit) = this.combinedClickable(onClick = onClick)
