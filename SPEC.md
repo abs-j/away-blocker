@@ -35,6 +35,13 @@
 - Long-press an app: pin, rename, per-app launch delay (off/5/10/15 s with cancel), set as swipe app, hide. Hidden apps are restored in the Launcher tab of settings.
 - Cut: intent prompt, daily wallpaper.
 
+## 5. Focus mode
+- One Focus switch and one optional daily schedule replace the separate Blocking and Hold settings.
+- Two checkboxes choose what Focus does: hide distracting apps (blocker + launcher hiding) and hold notifications.
+- During a hold, new urgent notifications break through once as a high-priority alert; everything else returns when Focus ends.
+- The 30-second unlock pauses only app hiding for 10 minutes; notifications stay held.
+- Existing installs migrate once: old Blocking and Hold settings map onto Focus and its two checkboxes.
+
 ## Screens
 Home (counter, on/off), Blocked apps + schedule, Digest, Permissions setup.
 

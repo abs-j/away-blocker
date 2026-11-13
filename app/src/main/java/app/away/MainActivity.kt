@@ -134,69 +134,49 @@ fun HomeScreen() {
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Text("Time away", fontSize = 16.sp)
+        Text("Since you last used a distracting app", fontSize = 16.sp)
         Text(Blocking.formatDuration(Blocking.awayMillis(now)), fontSize = 56.sp)
 
+        var blocksApps by remember { mutableStateOf(Prefs.focusBlocksApps) }
+        var holdsNotifs by remember { mutableStateOf(Prefs.focusHoldsNotifs) }
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Blocking", Modifier.weight(1f), fontSize = 18.sp)
-                    Switch(checked = enabled, onCheckedChange = { enabled = it; Prefs.enabled = it })
+                    Text("Focus", Modifier.weight(1f), fontSize = 18.sp)
+                    Switch(checked = enabled, onCheckedChange = { enabled = it; Prefs.enabled = it; TriageListener.syncNow() })
                 }
-                val status = when {
-                    !enabled -> "Off"
-                    Blocking.isPaused(now) -> "Paused until " +
-                        SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(Prefs.unlockUntil))
-                    Blocking.isActive(now) -> "Active now"
-                    else -> "On, outside schedule"
+                val doing = listOfNotNull(
+                    "hiding distracting apps".takeIf { blocksApps && !Blocking.isPaused(now) },
+                    "apps unlocked until ${SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(Prefs.unlockUntil))}"
+                        .takeIf { blocksApps && Blocking.isPaused(now) },
+                    "holding notifications".takeIf { holdsNotifs },
+                ).joinToString(", ")
+                Text(
+                    when {
+                        !enabled -> "Off"
+                        !Blocking.isFocusOn(now) -> "On, outside schedule"
+                        doing.isEmpty() -> "On, but nothing selected below"
+                        else -> "Active: " + doing
+                    }
+                )
+                CheckRow("Hide distracting apps", blocksApps) {
+                    blocksApps = it; Prefs.focusBlocksApps = it
                 }
-                Text(status)
+                CheckRow("Hold notifications (urgent ones still come through)", holdsNotifs) {
+                    holdsNotifs = it; Prefs.focusHoldsNotifs = it; TriageListener.syncNow()
+                }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("Only during a daily schedule", Modifier.weight(1f))
-                    Switch(checked = sched, onCheckedChange = { sched = it; Prefs.scheduleEnabled = it })
+                    Switch(checked = sched, onCheckedChange = { sched = it; Prefs.scheduleEnabled = it; TriageListener.syncNow() })
                 }
                 if (sched) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedButton(onClick = {
-                            TimePickerDialog(ctx, { _, h, m -> start = h * 60 + m; Prefs.startMin = start }, start / 60, start % 60, true).show()
+                            TimePickerDialog(ctx, { _, h, m -> start = h * 60 + m; Prefs.startMin = start; TriageListener.syncNow() }, start / 60, start % 60, true).show()
                         }) { Text("From ${fmtTime(start)}") }
                         OutlinedButton(onClick = {
-                            TimePickerDialog(ctx, { _, h, m -> end = h * 60 + m; Prefs.endMin = end }, end / 60, end % 60, true).show()
+                            TimePickerDialog(ctx, { _, h, m -> end = h * 60 + m; Prefs.endMin = end; TriageListener.syncNow() }, end / 60, end % 60, true).show()
                         }) { Text("To ${fmtTime(end)}") }
-                    }
-                }
-            }
-        }
-
-        var hold by remember { mutableStateOf(Prefs.holdEnabled) }
-        var holdSched by remember { mutableStateOf(Prefs.holdScheduleEnabled) }
-        var hStart by remember { mutableIntStateOf(Prefs.holdStartMin) }
-        var hEnd by remember { mutableIntStateOf(Prefs.holdEndMin) }
-        Card(Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Hold notifications", Modifier.weight(1f), fontSize = 18.sp)
-                    Switch(checked = hold, onCheckedChange = { hold = it; Prefs.holdEnabled = it; TriageListener.syncNow() })
-                }
-                Text(
-                    when {
-                        !hold -> "Off: notifications arrive normally"
-                        Blocking.isHoldActive(now) -> "Holding now. Everything is hidden and comes back when the hold ends."
-                        else -> "On, outside schedule"
-                    }
-                )
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Only during a daily schedule", Modifier.weight(1f))
-                    Switch(checked = holdSched, onCheckedChange = { holdSched = it; Prefs.holdScheduleEnabled = it; TriageListener.syncNow() })
-                }
-                if (holdSched) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(onClick = {
-                            TimePickerDialog(ctx, { _, h, m -> hStart = h * 60 + m; Prefs.holdStartMin = hStart }, hStart / 60, hStart % 60, true).show()
-                        }) { Text("From ${fmtTime(hStart)}") }
-                        OutlinedButton(onClick = {
-                            TimePickerDialog(ctx, { _, h, m -> hEnd = h * 60 + m; Prefs.holdEndMin = hEnd }, hEnd / 60, hEnd % 60, true).show()
-                        }) { Text("To ${fmtTime(hEnd)}") }
                     }
                 }
             }
@@ -205,9 +185,9 @@ fun HomeScreen() {
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Need a blocked app?", fontSize = 18.sp)
-                Text("Wait 30 seconds, then blocking pauses for 10 minutes. Open the app yourself afterwards.")
+                Text("Wait 30 seconds, then distracting apps unlock for 10 minutes. Notifications stay held.")
                 Button(enabled = countdown == 0 && Blocking.isActive(now) && !Blocking.isPaused(now), onClick = { countdown = 30 }) {
-                    Text(if (countdown > 0) "Unlocking in ${countdown}s" else "Pause blocking")
+                    Text(if (countdown > 0) "Unlocking in ${countdown}s" else "Unlock apps for 10 min")
                 }
                 if (countdown > 0) OutlinedButton(onClick = { countdown = 0 }) { Text("Cancel") }
             }
@@ -216,7 +196,7 @@ fun HomeScreen() {
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Setup", fontSize = 18.sp)
-                PermRow("Accessibility (blocking + pill)", a11y) {
+                PermRow("Accessibility (blocking, lock screen timer)", a11y) {
                     ctx.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
                 }
                 PermRow("Notification access (triage)", listener) {
@@ -241,6 +221,17 @@ fun HomeScreen() {
                 }) { Text("Battery settings") }
             }
         }
+    }
+}
+
+@Composable
+private fun CheckRow(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clickable { onChange(!checked) },
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Checkbox(checked = checked, onCheckedChange = null)
+        Text(label, Modifier.padding(start = 8.dp))
     }
 }
 

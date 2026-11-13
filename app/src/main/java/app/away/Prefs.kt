@@ -55,14 +55,47 @@ object Prefs {
         sp = app.getSharedPreferences("away", Context.MODE_PRIVATE)
         appCtx = app
         if (!sp.contains("install")) sp.edit().putLong("install", System.currentTimeMillis()).apply()
+        migrateToFocus()
+    }
+
+    /**
+     * One-time move from separate Blocking and Hold settings to a single Focus mode. Focus reuses the
+     * old blocking keys (enabled, schedule); the old hold settings decide the two Focus checkboxes.
+     */
+    private fun migrateToFocus() {
+        if (sp.getBoolean("focusMigrated", false)) return
+        val oldBlock = enabled
+        val oldHold = holdEnabled
+        val on = oldBlock || oldHold
+        val e = sp.edit()
+            .putBoolean("enabled", on)
+            .putBoolean("focusBlocksApps", oldBlock || !on)
+            .putBoolean("focusHoldsNotifs", oldHold || !on)
+        if (!oldBlock && oldHold) {
+            // Only the hold was on, so its schedule becomes the Focus schedule.
+            e.putBoolean("scheduleEnabled", holdScheduleEnabled)
+                .putInt("startMin", holdStartMin).putInt("endMin", holdEndMin)
+        }
+        e.putBoolean("focusMigrated", true).apply()
     }
 
     private fun bool(k: String, d: Boolean) = sp.getBoolean(k, d)
     private fun putBool(k: String, v: Boolean) = sp.edit().putBoolean(k, v).apply()
 
+    /** Focus mode on/off. Stored under the original blocking key. */
     var enabled: Boolean
         get() = bool("enabled", false)
         set(v) = putBool("enabled", v)
+
+    /** While Focus is active: hide and block distracting apps. */
+    var focusBlocksApps: Boolean
+        get() = bool("focusBlocksApps", true)
+        set(v) = putBool("focusBlocksApps", v)
+
+    /** While Focus is active: hold notifications (urgent ones still break through). */
+    var focusHoldsNotifs: Boolean
+        get() = bool("focusHoldsNotifs", true)
+        set(v) = putBool("focusHoldsNotifs", v)
 
     var scheduleEnabled: Boolean
         get() = bool("scheduleEnabled", false)
@@ -77,21 +110,20 @@ object Prefs {
         get() = sp.getInt("endMin", 17 * 60)
         set(v) = sp.edit().putInt("endMin", v).apply()
 
-    // Notification holding is independent of app blocking. Until first changed, each setting
-    // falls back to the matching blocking setting so existing installs keep their behaviour.
-    var holdEnabled: Boolean
+    // Legacy separate hold settings, read only by migrateToFocus().
+    private var holdEnabled: Boolean
         get() = if (sp.contains("holdEnabled")) bool("holdEnabled", false) else enabled
         set(v) = putBool("holdEnabled", v)
 
-    var holdScheduleEnabled: Boolean
+    private var holdScheduleEnabled: Boolean
         get() = if (sp.contains("holdScheduleEnabled")) bool("holdScheduleEnabled", false) else scheduleEnabled
         set(v) = putBool("holdScheduleEnabled", v)
 
-    var holdStartMin: Int
+    private var holdStartMin: Int
         get() = if (sp.contains("holdStartMin")) sp.getInt("holdStartMin", 0) else startMin
         set(v) = sp.edit().putInt("holdStartMin", v).apply()
 
-    var holdEndMin: Int
+    private var holdEndMin: Int
         get() = if (sp.contains("holdEndMin")) sp.getInt("holdEndMin", 0) else endMin
         set(v) = sp.edit().putInt("holdEndMin", v).apply()
 
@@ -245,8 +277,8 @@ data class DigestItem(
 }
 
 object Blocking {
-    /** True when the blocker should currently block (toggle on, inside schedule if any). */
-    fun isActive(now: Long = System.currentTimeMillis()): Boolean {
+    /** True when Focus is on and inside its schedule (if any). */
+    fun isFocusOn(now: Long = System.currentTimeMillis()): Boolean {
         if (!Prefs.enabled) return false
         if (!Prefs.scheduleEnabled) return true
         val cal = java.util.Calendar.getInstance().apply { timeInMillis = now }
@@ -256,16 +288,11 @@ object Blocking {
         return if (s <= e) m in s until e else (m >= s || m < e)
     }
 
-    /** True when notifications should currently be held. Separate from app blocking and its pause. */
-    fun isHoldActive(now: Long = System.currentTimeMillis()): Boolean {
-        if (!Prefs.holdEnabled) return false
-        if (!Prefs.holdScheduleEnabled) return true
-        val cal = java.util.Calendar.getInstance().apply { timeInMillis = now }
-        val m = cal.get(java.util.Calendar.HOUR_OF_DAY) * 60 + cal.get(java.util.Calendar.MINUTE)
-        val s = Prefs.holdStartMin
-        val e = Prefs.holdEndMin
-        return if (s <= e) m in s until e else (m >= s || m < e)
-    }
+    /** Focus is on and set to hide distracting apps. The unlock pause is checked separately. */
+    fun isActive(now: Long = System.currentTimeMillis()) = isFocusOn(now) && Prefs.focusBlocksApps
+
+    /** Focus is on and set to hold notifications. Not affected by the unlock pause. */
+    fun isHoldActive(now: Long = System.currentTimeMillis()) = isFocusOn(now) && Prefs.focusHoldsNotifs
 
     fun isPaused(now: Long = System.currentTimeMillis()) = now < Prefs.unlockUntil
 
