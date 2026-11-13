@@ -40,7 +40,6 @@ class BlockerService : AccessibilityService() {
     private var shield: View? = null
     private var currentPkg: String? = null
     private var lastBlockAt = 0L
-    private var fgSince = 0L
     private var quitting = false
     private val hideRunnable = Runnable { hideShield(); quitting = false }
 
@@ -54,8 +53,8 @@ class BlockerService : AccessibilityService() {
                 if (Blocking.shouldBlock(pkg, now)) {
                     // Already open when blocking started or a pause ended.
                     block(pkg, now)
-                } else if (pkg in Prefs.blocked && now - fgSince > 5000) {
-                    // Genuine use: allowed blocked app held the foreground for more than 5s.
+                } else if (pkg in Prefs.blocked) {
+                    // Still using a distracting app: keep the home timer at 0 until you leave it.
                     Prefs.lastUse = now
                 }
             }
@@ -125,12 +124,15 @@ class BlockerService : AccessibilityService() {
         // Away's own overlay windows (shield) also fire window events; only real Away
         // screens count, otherwise the foreground flips to Away and resets the use timer.
         if (pkg == packageName && event.className?.startsWith("app.away.") != true) return
-        if (pkg != currentPkg) fgSince = System.currentTimeMillis()
         currentPkg = pkg
         if (pkg == packageName) return
         val now = System.currentTimeMillis()
         if (Blocking.shouldBlock(pkg, now)) {
             block(pkg, now)
+        } else if (pkg in Prefs.blocked) {
+            // Opening a distracting app that is not being blocked (Focus off, paused or apps not
+            // hidden) resets the home timer straight away. Blocked attempts never get here.
+            Prefs.lastUse = now
         }
     }
 

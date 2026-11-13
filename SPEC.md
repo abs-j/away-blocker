@@ -11,7 +11,7 @@
 
 ## 2. Time-away indicator
 - Floating overlay pill showing time since you last used a blocked app (e.g. `3h 12m`).
-- Resets only when a blocked app is genuinely used for more than a few seconds, not on a blocked attempt.
+- Resets the moment any app on the distracting list is opened and not blocked (Focus off, paused, or app hiding unticked), and stays at 0 while you use it. Blocked attempts do not reset it.
 - Also shown in an ongoing notification so it is visible on the lock screen.
 
 ## 3. Notification triage
