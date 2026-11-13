@@ -103,6 +103,11 @@ object Prefs {
         get() = sp.getLong("lastUse", 0L)
         set(v) = sp.edit().putLong("lastUse", v).apply()
 
+    /** Last moment the phone was in use: updated when the screen turns off after an unlocked session. */
+    var lastPhoneUse: Long
+        get() = sp.getLong("lastPhoneUse", 0L)
+        set(v) = sp.edit().putLong("lastPhoneUse", v).apply()
+
     val installTime: Long get() = sp.getLong("install", System.currentTimeMillis())
 
     var blocked: Set<String>

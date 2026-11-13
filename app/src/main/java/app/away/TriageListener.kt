@@ -52,7 +52,8 @@ class TriageListener : NotificationListenerService() {
         val want = Blocking.isHoldActive()
         if (want && !holding) {
             holding = true
-            runCatching { activeNotifications }.getOrNull()?.forEach { process(it) }
+            // Notifications already showing were seen; hide them without alerting again.
+            runCatching { activeNotifications }.getOrNull()?.forEach { process(it, fresh = false) }
         } else if (!want && holding) {
             holding = false
             restoreHeld()
@@ -106,11 +107,14 @@ class TriageListener : NotificationListenerService() {
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         syncHold()
-        if (holding) process(sbn)
+        if (holding) process(sbn, fresh = true)
     }
 
-    /** Removes one notification and records it. Returns false if it was left alone. */
-    private fun process(sbn: StatusBarNotification): Boolean {
+    /**
+     * Removes one notification and records it. Returns false if it was left alone. [fresh] is true
+     * for a newly posted notification, which may break through the hold if it is urgent.
+     */
+    private fun process(sbn: StatusBarNotification, fresh: Boolean): Boolean {
         val n = sbn.notification ?: return false
         if (sbn.packageName == packageName || sbn.packageName in ignoredPackages) return false
         if (sbn.isOngoing || (n.flags and Notification.FLAG_FOREGROUND_SERVICE) != 0) return false
@@ -142,13 +146,37 @@ class TriageListener : NotificationListenerService() {
             !same
         }
         cancelNotification(sbn.key)
-        if (isNew) pool.execute { triage(pkg, app, title, text, category) }
+        if (isNew) pool.execute { triage(sbn.key, pkg, app, title, text, category, fresh) }
         return true
     }
 
-    private fun triage(pkg: String, app: String, title: String, text: String, category: String?) {
+    private fun triage(
+        key: String, pkg: String, app: String, title: String, text: String, category: String?, fresh: Boolean,
+    ) {
         val verdict = decide(pkg, app, title, text, category)
         Prefs.addDigest(DigestItem(app, title, text, System.currentTimeMillis(), verdict.urgent, verdict.reason))
+        if (verdict.urgent && fresh && holding) breakThrough(key, verdict.reason)
+    }
+
+    /**
+     * Urgent breakthrough: show an urgent notification once as a heads-up alert while the hold
+     * continues. It is taken out of the held set so it is not shown a second time when the hold ends.
+     */
+    private fun breakThrough(key: String, reason: String) {
+        val h = synchronized(held) { held.remove(key) } ?: return
+        val b = Notification.Builder(this, AwayApp.CH_URGENT)
+            .setSmallIcon(h.icon ?: Icon.createWithResource(this, android.R.drawable.stat_notify_chat))
+            .setContentTitle(h.title.ifBlank { h.app })
+            .setContentText(h.text)
+            .setSubText("${h.app} · urgent: $reason")
+            .setStyle(Notification.BigTextStyle().bigText(h.text))
+            .setCategory(Notification.CATEGORY_MESSAGE)
+            .setWhen(h.time)
+            .setShowWhen(true)
+            .setAutoCancel(true)
+            .setGroup("urgent_${h.key}")
+        h.contentIntent?.let { b.setContentIntent(it) }
+        getSystemService(NotificationManager::class.java).notify("urgent", h.key.hashCode(), b.build())
     }
 
     private fun decide(pkg: String, app: String, title: String, text: String, category: String?): Verdict {

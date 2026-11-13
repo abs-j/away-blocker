@@ -2,6 +2,11 @@ package app.away
 
 import android.accessibilityservice.AccessibilityService
 import android.app.ActivityManager
+import android.app.KeyguardManager
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.IntentFilter
+import androidx.core.content.ContextCompat
 import android.app.Notification
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -27,20 +32,17 @@ import android.widget.TextView
 
 /**
  * Detects blocked apps opening, covers the screen, sends the user Home and kills the app's
- * background process. Also hosts the time-away pill and the lock screen notification.
+ * background process. Also hosts the lock screen notification (time since you last used the phone).
  */
 class BlockerService : AccessibilityService() {
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var wm: WindowManager
-    private var pill: TextView? = null
-    private var pillParams: WindowManager.LayoutParams? = null
     private var shield: View? = null
     private var currentPkg: String? = null
     private var lastBlockAt = 0L
     private var fgSince = 0L
     private var quitting = false
     private val hideRunnable = Runnable { hideShield(); quitting = false }
-    private var ticks = 0
 
     private val tick = object : Runnable {
         override fun run() {
@@ -57,18 +59,17 @@ class BlockerService : AccessibilityService() {
                     Prefs.lastUse = now
                 }
             }
-            updatePill()
-            if (ticks++ % 20 == 0) postIndicatorNotification()
+            syncPhoneState()
             handler.postDelayed(this, 3000)
         }
     }
 
     override fun onServiceConnected() {
         instance = this
+        registerScreenReceiver()
         wm =getSystemService(WINDOW_SERVICE) as WindowManager
         ensureShield()
         refreshLabels()
-        addPill()
         handler.post(tick)
     }
 
@@ -121,9 +122,11 @@ class BlockerService : AccessibilityService() {
         if (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
         val pkg = event.packageName?.toString() ?: return
         if (pkg == "com.android.systemui" || IME_HINTS.any { pkg.contains(it, ignoreCase = true) }) return
+        // Away's own overlay windows (shield) also fire window events; only real Away
+        // screens count, otherwise the foreground flips to Away and resets the use timer.
+        if (pkg == packageName && event.className?.startsWith("app.away.") != true) return
         if (pkg != currentPkg) fgSince = System.currentTimeMillis()
         currentPkg = pkg
-        updatePill()
         if (pkg == packageName) return
         val now = System.currentTimeMillis()
         if (Blocking.shouldBlock(pkg, now)) {
@@ -135,8 +138,8 @@ class BlockerService : AccessibilityService() {
 
     override fun onDestroy() {
         if (instance === this) instance = null
+        runCatching { unregisterReceiver(screenReceiver) }
         handler.removeCallbacksAndMessages(null)
-        pill?.let { runCatching { wm.removeView(it) } }
         shield?.let { runCatching { wm.removeView(it) } }
         shield = null
         super.onDestroy()
@@ -300,61 +303,70 @@ class BlockerService : AccessibilityService() {
         shield?.visibility = View.INVISIBLE
     }
 
-    private fun addPill() {
-        val tv = TextView(this).apply {
-            setTextColor(Color.WHITE)
-            textSize = 13f
-            setPadding(32, 14, 32, 14)
-            background = GradientDrawable().apply {
-                cornerRadius = 80f
-                setColor(0xCC111111.toInt())
-            }
-        }
-        val p = overlayParams(
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-        ).apply {
-            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-            y = 90
-        }
-        var startY = 0
-        var touchY = 0f
-        tv.setOnTouchListener { _, e ->
-            when (e.action) {
-                MotionEvent.ACTION_DOWN -> { startY = p.y; touchY = e.rawY }
-                MotionEvent.ACTION_MOVE -> {
-                    p.y = (startY + (e.rawY - touchY)).toInt().coerceAtLeast(0)
-                    runCatching { wm.updateViewLayout(tv, p) }
-                }
-            }
-            true
-        }
-        runCatching { wm.addView(tv, p); pill = tv; pillParams = p }
-        updatePill()
+    /** True from unlock until the screen turns off again. */
+    private var unlocked = false
+    private var shownText = ""
+
+    private val screenReceiver = object : BroadcastReceiver() {
+        override fun onReceive(c: Context, i: Intent) = syncPhoneState()
     }
 
-    private fun label(): String = "Away " + Blocking.formatDuration(Blocking.awayMillis())
-
-    private fun updatePill() {
-        pill?.text = label()
-        // Away's own screens (launcher home, settings) already show the counter.
-        pill?.visibility = if (currentPkg == packageName) View.GONE else View.VISIBLE
+    private fun registerScreenReceiver() {
+        syncPhoneState()
+        ContextCompat.registerReceiver(
+            this, screenReceiver,
+            IntentFilter().apply {
+                addAction(Intent.ACTION_USER_PRESENT)
+                addAction(Intent.ACTION_SCREEN_ON)
+                addAction(Intent.ACTION_SCREEN_OFF)
+            },
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
     }
 
+    /**
+     * Works out whether the phone is in use by checking the keyguard directly (face and fingerprint
+     * unlock do not always send USER_PRESENT), records the moment you put it down, and refreshes the
+     * lock screen notification. Called from the screen broadcasts and every tick while awake.
+     */
+    private fun syncPhoneState() {
+        val interactive = getSystemService(PowerManager::class.java).isInteractive
+        val inUse = interactive && !getSystemService(KeyguardManager::class.java).isKeyguardLocked
+        if (unlocked && !inUse) {
+            Prefs.lastPhoneUse = System.currentTimeMillis()
+            unlocked = false
+        } else if (!unlocked && inUse) {
+            unlocked = true
+        }
+        postIndicatorNotification()
+    }
+
+    /**
+     * Lock screen notification, in whole minutes since you last used the phone. A system chronometer
+     * counts seconds, so this is plain text instead, refreshed whenever the screen wakes and each
+     * minute while it stays on. It says "in use" while the phone is unlocked.
+     */
     private fun postIndicatorNotification() {
+        val title = if (unlocked) {
+            "Phone in use"
+        } else {
+            val since = Prefs.lastPhoneUse.takeIf { it > 0 } ?: Prefs.installTime
+            "Untouched for " + Blocking.formatDuration((System.currentTimeMillis() - since).coerceAtLeast(0))
+        }
+        if (title == shownText) return
+        shownText = title
         val open = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE,
         )
-        val n = Notification.Builder(this, AwayApp.CH_INDICATOR)
+        val b = Notification.Builder(this, AwayApp.CH_INDICATOR)
             .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
-            .setContentTitle(label())
-            .setContentText("Since you last used a blocked app")
+            .setContentTitle(title)
+            .setContentText(if (unlocked) "Timer restarts when you put it down" else "Since you last used your phone")
             .setOngoing(true)
             .setOnlyAlertOnce(true)
+            .setShowWhen(false)
             .setVisibility(Notification.VISIBILITY_PUBLIC)
             .setContentIntent(open)
-            .build()
-        getSystemService(NotificationManager::class.java).notify(1, n)
+        getSystemService(NotificationManager::class.java).notify(1, b.build())
     }
 }

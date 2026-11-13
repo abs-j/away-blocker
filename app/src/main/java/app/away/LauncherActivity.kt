@@ -191,11 +191,6 @@ class LauncherActivity : ComponentActivity() {
         resumes.intValue++
     }
 
-    @Deprecated("Home press should leave the launcher state as is")
-    override fun onBackPressed() {
-        // The home screen is the root; Back does nothing here. The drawer handles its own Back.
-    }
-
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         // Home pressed while already on home: bump so the drawer closes.
@@ -240,6 +235,9 @@ fun LauncherRoot(resumeRev: Int) {
     }
     // Close the drawer when home is pressed again.
     LaunchedEffect(resumeRev) { drawer = false; now = System.currentTimeMillis() }
+    // Home is the root: swallow Back here. Registered first, so the drawer's and the launch
+    // countdown's own Back handlers (composed later) take priority while they are showing.
+    BackHandler { }
 
     // Recomputed whenever the clock ticks, the activity resumes or an edit happens.
     var all by remember { mutableStateOf(Apps.cache) }
@@ -332,7 +330,10 @@ fun LauncherRoot(resumeRev: Int) {
                 .padding(horizontal = 28.dp, vertical = 24.dp),
         ) {
             Text(
-                SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(now)),
+                SimpleDateFormat(
+                    if (android.text.format.DateFormat.is24HourFormat(ctx)) "HH:mm" else "h:mm",
+                    Locale.getDefault(),
+                ).format(Date(now)),
                 fontSize = 64.sp, fontWeight = FontWeight.Light,
             )
             Text(SimpleDateFormat("EEEE, d MMMM", Locale.getDefault()).format(Date(now)), color = Dim, fontSize = 16.sp)
@@ -523,6 +524,10 @@ private fun Drawer(
     var query by remember { mutableStateOf("") }
     val matches = remember(query, apps, renames) { Apps.search(apps, renames, query) }
     val focusReq = remember { FocusRequester() }
+    // LazyColumn keeps the first visible item when results change, which hid the best matches
+    // above the fold. Jump back to the top on every keystroke.
+    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+    LaunchedEffect(query) { listState.scrollToItem(0) }
     val kb = LocalSoftwareKeyboardController.current
 
     BackHandler(onBack = onClose)
@@ -576,7 +581,7 @@ private fun Drawer(
                 modifier = Modifier.fillMaxWidth().focusRequester(focusReq),
             )
         }
-        LazyColumn(Modifier.fillMaxSize()) {
+        LazyColumn(Modifier.fillMaxSize(), state = listState) {
             items(matches, key = { it.pkg }) { app ->
                 PressableText(
                     Apps.displayName(app, renames), fontSize = 24.sp,
