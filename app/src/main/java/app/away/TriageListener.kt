@@ -9,12 +9,16 @@ import android.os.Handler
 import android.os.Looper
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
+import androidx.compose.runtime.mutableIntStateOf
+import org.json.JSONArray
+import org.json.JSONObject
 import java.util.concurrent.Executors
 
 /**
  * While the hold is active: remove every notification from the bar (new ones and ones already
  * showing), classify it for the digest, and keep a copy in memory. When the hold ends, post the
- * held notifications back so nothing is lost.
+ * held notifications back so nothing is lost. The held set is also saved to storage, so a process
+ * restart (app update, Android killing Away) does not lose it.
  */
 class TriageListener : NotificationListenerService() {
     private val pool = Executors.newSingleThreadExecutor()
@@ -38,8 +42,37 @@ class TriageListener : NotificationListenerService() {
 
     override fun onListenerConnected() {
         instance = this
+        loadPersisted()
         handler.removeCallbacks(tick)
         handler.post(tick)
+    }
+
+    /** Saves what is held (without icons and tap actions, which cannot be stored). */
+    private fun persist() {
+        val items = synchronized(held) { held.values.toList() }
+        val arr = JSONArray()
+        items.forEach {
+            arr.put(JSONObject().put("key", it.key).put("pkg", it.pkg).put("app", it.app)
+                .put("title", it.title).put("text", it.text).put("time", it.time))
+        }
+        Prefs.heldStore = arr.toString()
+        heldCount.intValue = items.size
+    }
+
+    /** After a restart, brings back held notifications saved before the process died. */
+    private fun loadPersisted() {
+        val arr = runCatching { JSONArray(Prefs.heldStore) }.getOrNull() ?: return
+        synchronized(held) {
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                val key = o.getString("key")
+                if (key !in held) {
+                    held[key] = Held(key, o.optString("pkg"), o.optString("app"), o.optString("title"),
+                        o.optString("text"), o.optLong("time"), null, null)
+                }
+            }
+        }
+        heldCount.intValue = synchronized(held) { held.size }
     }
 
     override fun onListenerDisconnected() {
@@ -57,11 +90,15 @@ class TriageListener : NotificationListenerService() {
         } else if (!want && holding) {
             holding = false
             restoreHeld()
+        } else if (!want && synchronized(held) { held.isNotEmpty() }) {
+            // Restarted after the hold ended: put back what was saved.
+            restoreHeld()
         }
     }
 
     private fun restoreHeld() {
         val items = synchronized(held) { held.values.toList().also { held.clear() } }
+        persist()
         val nm = getSystemService(NotificationManager::class.java)
         items.forEach { h ->
             val b = Notification.Builder(this, AwayApp.CH_RESTORED)
@@ -75,9 +112,15 @@ class TriageListener : NotificationListenerService() {
                 .setAutoCancel(true)
                 // A unique group per notification stops Android folding them under one Away bundle.
                 .setGroup("held_${h.key}")
-            h.contentIntent?.let { b.setContentIntent(it) }
+            (h.contentIntent ?: openAppIntent(h.pkg, h.key))?.let { b.setContentIntent(it) }
             nm.notify("held", h.key.hashCode(), b.build())
         }
+    }
+
+    /** Tap action for a notification restored from storage: open its app. */
+    private fun openAppIntent(pkg: String, key: String): PendingIntent? {
+        val launch = packageManager.getLaunchIntentForPackage(pkg) ?: return null
+        return PendingIntent.getActivity(this, key.hashCode(), launch, PendingIntent.FLAG_IMMUTABLE)
     }
 
     private val passThroughCategories = setOf(
@@ -137,6 +180,7 @@ class TriageListener : NotificationListenerService() {
         synchronized(held) {
             held[sbn.key] = Held(sbn.key, pkg, app, title, text, sbn.postTime, n.smallIcon, n.contentIntent)
         }
+        persist()
         // Messaging apps re-post the same key with unchanged text; only classify once.
         val sig = "$title|$text"
         val isNew = synchronized(lastTextByKey) {
@@ -154,7 +198,7 @@ class TriageListener : NotificationListenerService() {
         key: String, pkg: String, app: String, title: String, text: String, category: String?, fresh: Boolean,
     ) {
         val verdict = decide(pkg, app, title, text, category)
-        Prefs.addDigest(DigestItem(app, title, text, System.currentTimeMillis(), verdict.urgent, verdict.reason))
+        Prefs.addDigest(DigestItem(app, title, text, System.currentTimeMillis(), verdict.urgent, verdict.reason, pkg))
         if (verdict.urgent && fresh && holding) breakThrough(key, verdict.reason)
     }
 
@@ -164,6 +208,7 @@ class TriageListener : NotificationListenerService() {
      */
     private fun breakThrough(key: String, reason: String) {
         val h = synchronized(held) { held.remove(key) } ?: return
+        persist()
         val b = Notification.Builder(this, AwayApp.CH_URGENT)
             .setSmallIcon(h.icon ?: Icon.createWithResource(this, android.R.drawable.stat_notify_chat))
             .setContentTitle(h.title.ifBlank { h.app })
@@ -175,7 +220,7 @@ class TriageListener : NotificationListenerService() {
             .setShowWhen(true)
             .setAutoCancel(true)
             .setGroup("urgent_${h.key}")
-        h.contentIntent?.let { b.setContentIntent(it) }
+        (h.contentIntent ?: openAppIntent(h.pkg, h.key))?.let { b.setContentIntent(it) }
         getSystemService(NotificationManager::class.java).notify("urgent", h.key.hashCode(), b.build())
     }
 
@@ -203,5 +248,11 @@ class TriageListener : NotificationListenerService() {
 
         /** Applies a hold setting change right away instead of waiting for the next tick. */
         fun syncNow() { instance?.let { l -> l.handler.post { l.syncHold() } } }
+
+        /** Number of notifications held right now, for the launcher and the Digest screen. */
+        val heldCount = mutableIntStateOf(0)
+
+        /** Puts every held notification back now. The hold stays on for new ones. */
+        fun releaseNow() { instance?.let { l -> l.handler.post { l.restoreHeld() } } }
     }
 }

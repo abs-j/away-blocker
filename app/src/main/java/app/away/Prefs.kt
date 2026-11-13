@@ -56,6 +56,7 @@ object Prefs {
         appCtx = app
         if (!sp.contains("install")) sp.edit().putLong("install", System.currentTimeMillis()).apply()
         migrateToFocus()
+        Stats.init(app)
     }
 
     /**
@@ -234,20 +235,36 @@ object Prefs {
     // Digest storage
     val digestVersion = mutableIntStateOf(0)
 
+    /** Digest entries older than this are dropped, so the list stays about today. */
+    private const val DIGEST_KEEP_MS = 24 * 60 * 60_000L
+
     @Synchronized
     fun digest(): List<DigestItem> {
         val arr = JSONArray(sp.getString("digest", "[]"))
-        return (0 until arr.length()).map { DigestItem.from(arr.getJSONObject(it)) }
+        val cutoff = System.currentTimeMillis() - DIGEST_KEEP_MS
+        return (0 until arr.length()).map { DigestItem.from(arr.getJSONObject(it)) }.filter { it.time >= cutoff }
     }
 
-    @Synchronized
-    fun addDigest(item: DigestItem) {
-        val list = (listOf(item) + digest()).take(200)
+    private fun saveDigest(list: List<DigestItem>) {
         val arr = JSONArray()
         list.forEach { arr.put(it.toJson()) }
         sp.edit().putString("digest", arr.toString()).apply()
         digestVersion.intValue++
     }
+
+    @Synchronized
+    fun addDigest(item: DigestItem) = saveDigest((listOf(item) + digest()).take(200))
+
+    @Synchronized
+    fun removeDigest(item: DigestItem) {
+        val list = digest().toMutableList()
+        if (list.remove(item)) saveDigest(list)
+    }
+
+    /** Held notifications saved as JSON, so a restart does not lose them. Written by TriageListener. */
+    var heldStore: String
+        get() = sp.getString("heldStore", "[]") ?: "[]"
+        set(v) = sp.edit().putString("heldStore", v).apply()
 
     @Synchronized
     fun clearDigest() {
@@ -263,15 +280,17 @@ data class DigestItem(
     val time: Long,
     val urgent: Boolean,
     val reason: String,
+    /** Source app package, for opening it from the digest. Blank on entries saved before it existed. */
+    val pkg: String = "",
 ) {
     fun toJson() = JSONObject()
         .put("app", app).put("title", title).put("text", text)
-        .put("time", time).put("urgent", urgent).put("reason", reason)
+        .put("time", time).put("urgent", urgent).put("reason", reason).put("pkg", pkg)
 
     companion object {
         fun from(o: JSONObject) = DigestItem(
             o.optString("app"), o.optString("title"), o.optString("text"),
-            o.optLong("time"), o.optBoolean("urgent"), o.optString("reason"),
+            o.optLong("time"), o.optBoolean("urgent"), o.optString("reason"), o.optString("pkg"),
         )
     }
 }

@@ -337,15 +337,20 @@ fun LauncherRoot(resumeRev: Int) {
                 fontSize = 64.sp, fontWeight = FontWeight.Light,
             )
             Text(SimpleDateFormat("EEEE, d MMMM", Locale.getDefault()).format(Date(now)), color = Dim, fontSize = 16.sp)
+            val away = Blocking.awayMillis(now)
             Text(
-                "away " + Blocking.formatDuration(Blocking.awayMillis(now)),
+                Blocking.formatDuration(away) + " away",
                 Modifier.padding(top = 20.dp), fontSize = 30.sp,
             )
-            val digest = remember(Prefs.digestVersion.intValue, now / 5000) { Prefs.digest() }
-            if (digest.isNotEmpty()) {
-                val urgent = digest.count { it.urgent }
+            Text(
+                Motivation.line(away, Stats.best, maxOf(Prefs.lastUse, Prefs.installTime)),
+                Modifier.padding(top = 2.dp), color = Dim, fontSize = 16.sp,
+            )
+            // Live count of what is held right now, not the digest history.
+            val held = TriageListener.heldCount.intValue
+            if (held > 0) {
                 Text(
-                    (if (urgent > 0) "$urgent urgent · " else "") + "${digest.size} held",
+                    "$held notification${if (held == 1) "" else "s"} held",
                     Modifier.padding(top = 4.dp).combinedClickable(onClick = { openAway(2) }),
                     color = Dim, fontSize = 16.sp,
                 )
@@ -355,6 +360,17 @@ fun LauncherRoot(resumeRev: Int) {
                     "focus on · unlock",
                     Modifier.padding(top = 4.dp).combinedClickable(onClick = { openAway(0) }),
                     color = Dim, fontSize = 16.sp,
+                )
+            }
+            // The blocker service tracks app use; without it the timer above is frozen.
+            // Android sometimes fails to restart it after an update even though it is enabled.
+            if (BlockerService.instance == null) {
+                Text(
+                    "timer paused · Away service not running · fix",
+                    Modifier.padding(top = 4.dp).combinedClickable(onClick = {
+                        ctx.startActivity(Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                    }),
+                    color = Color(0xFFFFB4AB), fontSize = 16.sp,
                 )
             }
             Column(

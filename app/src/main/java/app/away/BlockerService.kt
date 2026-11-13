@@ -124,6 +124,7 @@ class BlockerService : AccessibilityService() {
         // Away's own overlay windows (shield) also fire window events; only real Away
         // screens count, otherwise the foreground flips to Away and resets the use timer.
         if (pkg == packageName && event.className?.startsWith("app.away.") != true) return
+        val prev = currentPkg
         currentPkg = pkg
         if (pkg == packageName) return
         val now = System.currentTimeMillis()
@@ -132,6 +133,7 @@ class BlockerService : AccessibilityService() {
         } else if (pkg in Prefs.blocked) {
             // Opening a distracting app that is not being blocked (Focus off, paused or apps not
             // hidden) resets the home timer straight away. Blocked attempts never get here.
+            if (pkg != prev) Stats.recordOpen(now, now - maxOf(Prefs.lastUse, Prefs.installTime))
             Prefs.lastUse = now
         }
     }
@@ -150,6 +152,7 @@ class BlockerService : AccessibilityService() {
     private fun block(pkg: String, now: Long) {
         // A quit sequence (Home, Recents, close card, Home) is already running; do not restart it.
         if (quitting) return
+        Stats.recordBlocked(now)
         Log.d("Away", "block $pkg")
         lastBlockAt = now
         showShield()
@@ -308,6 +311,8 @@ class BlockerService : AccessibilityService() {
     /** True from unlock until the screen turns off again. */
     private var unlocked = false
     private var shownText = ""
+    /** False until the first state check after the service starts, which is not a real pickup. */
+    private var synced = false
 
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(c: Context, i: Intent) = syncPhoneState()
@@ -339,7 +344,10 @@ class BlockerService : AccessibilityService() {
             unlocked = false
         } else if (!unlocked && inUse) {
             unlocked = true
+            val now = System.currentTimeMillis()
+            if (synced) Stats.recordPickup(now, now - (Prefs.lastPhoneUse.takeIf { it > 0 } ?: Prefs.installTime))
         }
+        synced = true
         postIndicatorNotification()
     }
 

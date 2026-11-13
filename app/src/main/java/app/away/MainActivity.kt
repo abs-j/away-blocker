@@ -83,6 +83,10 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxValue
+import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -335,12 +339,14 @@ fun HomeScreen() {
     var holdsNotifs by remember { mutableStateOf(Prefs.focusHoldsNotifs) }
     var countdown by remember { mutableIntStateOf(0) }
     var a11y by remember { mutableStateOf(a11yEnabled(ctx)) }
+    var a11yRunning by remember { mutableStateOf(BlockerService.instance != null) }
     var listener by remember { mutableStateOf(listenerEnabled(ctx)) }
 
     LaunchedEffect(Unit) {
         while (true) {
             now = System.currentTimeMillis()
             a11y = a11yEnabled(ctx)
+            a11yRunning = BlockerService.instance != null
             listener = listenerEnabled(ctx)
             delay(1000)
         }
@@ -381,11 +387,13 @@ fun HomeScreen() {
         ) {
             Column {
                 Text("Since a distracting app", style = MaterialTheme.typography.labelLarge, color = cs.onSurfaceVariant)
+                val away = Blocking.awayMillis(now)
+                Text(Blocking.formatDuration(away), fontSize = 64.sp, fontWeight = FontWeight.Light, color = cs.onSurface)
                 Text(
-                    Blocking.formatDuration(Blocking.awayMillis(now)),
-                    fontSize = 64.sp, fontWeight = FontWeight.Light, color = cs.onSurface,
+                    Motivation.line(away, Stats.best, maxOf(Prefs.lastUse, Prefs.installTime)),
+                    style = MaterialTheme.typography.titleMedium, color = cs.onSurface,
                 )
-                Spacer(Modifier.height(4.dp))
+                Spacer(Modifier.height(12.dp))
                 Pill(
                     if (active) "Focus on" else "Focus off",
                     container = if (active) cs.primary else cs.surfaceContainerHigh,
@@ -428,6 +436,8 @@ fun HomeScreen() {
             }
         }
 
+        WeekStats(now)
+
         // Unlock, only while apps are actually being hidden.
         AnimatedVisibility(Blocking.isActive(now) && (!paused || countdown > 0), enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
             Panel {
@@ -451,7 +461,7 @@ fun HomeScreen() {
         }
 
         // Setup: only shown when something is missing.
-        AnimatedVisibility(!a11y || !listener) {
+        AnimatedVisibility(!a11y || !a11yRunning || !listener) {
             Card(
                 Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp),
                 colors = CardDefaults.cardColors(containerColor = cs.errorContainer, contentColor = cs.onErrorContainer),
@@ -462,7 +472,13 @@ fun HomeScreen() {
                         Spacer(Modifier.width(8.dp))
                         Text("Finish setup", style = MaterialTheme.typography.titleMedium)
                     }
-                    if (!a11y) PermRow("Accessibility", "Blocking and the lock screen timer") {
+                    if (!a11y) PermRow("Accessibility", "Blocking, the home timer and the lock screen timer") {
+                        ctx.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                    } else if (!a11yRunning) PermRow(
+                        "Accessibility is on but not running",
+                        "Android did not restart Away after an update. Turn Away off and on again, or restart the phone.",
+                        action = "Open",
+                    ) {
                         ctx.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
                     }
                     if (!listener) PermRow("Notification access", "Holding and triage") {
@@ -488,14 +504,90 @@ fun HomeScreen() {
     }
 }
 
+/** This week at a glance: a bar per day of distracting-app opens, then the key numbers. */
 @Composable
-private fun PermRow(title: String, why: String, onOpen: () -> Unit) {
+private fun WeekStats(now: Long) {
+    val cs = MaterialTheme.colorScheme
+    val v = Stats.version.intValue
+    val days = remember(v, now / 60_000) { Stats.lastDays(14, now) }
+    val week = days.takeLast(7)
+    val prev = days.take(7)
+    val opens = week.sumOf { it.opens }
+    val prevOpens = prev.sumOf { it.opens }
+    val blocked = week.sumOf { it.blocked }
+    val pickups = week.sumOf { it.pickups }
+    val gapSum = week.sumOf { it.gapSum }
+    val longest = maxOf(week.maxOf { it.longest }, Blocking.awayMillis(now))
+    val maxBar = maxOf(1, week.maxOf { it.opens })
+    val dayFmt = SimpleDateFormat("EEE", Locale.getDefault())
+    // Average over days that have any data, so the first week is not diluted by empty days.
+    val tracked = week.count { it.opens > 0 || it.blocked > 0 || it.pickups > 0 }.coerceAtLeast(1)
+
+    Panel {
+        Row(Modifier.padding(horizontal = 20.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("This week", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
+            if (prevOpens > 0) {
+                val change = (opens - prevOpens) * 100 / prevOpens
+                Pill(
+                    if (change <= 0) "↓ ${-change}% opens" else "↑ $change% opens",
+                    container = if (change <= 0) cs.primary else cs.surfaceContainerHigh,
+                    content = if (change <= 0) cs.onPrimary else cs.onSurfaceVariant,
+                )
+            }
+        }
+        // Distracting-app opens per day, today highlighted.
+        Row(
+            Modifier.fillMaxWidth().height(110.dp).padding(horizontal = 20.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.Bottom,
+        ) {
+            week.forEachIndexed { i, d ->
+                Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(if (d.opens > 0) "${d.opens}" else "", style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant)
+                    Box(
+                        Modifier.fillMaxWidth().height((6 + 64 * d.opens / maxBar).dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (i == week.lastIndex) cs.primary else cs.primary.copy(alpha = 0.35f)),
+                    )
+                    Text(dayFmt.format(Date(d.start)).take(1), Modifier.padding(top = 4.dp), style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant)
+                }
+            }
+        }
+        Text(
+            "Distracting-app opens per day",
+            Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
+            style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant,
+        )
+        Divider()
+        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp)) {
+            StatCell("Opens", "$opens", Modifier.weight(1f))
+            StatCell("Blocked", "$blocked", Modifier.weight(1f))
+            StatCell("Longest away", Blocking.formatDuration(longest), Modifier.weight(1f))
+        }
+        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)) {
+            StatCell("Pickups a day", "${pickups / tracked}", Modifier.weight(1f))
+            StatCell("Between uses", if (pickups > 0) Blocking.formatDuration(gapSum / pickups) else "–", Modifier.weight(1f))
+            StatCell("Best ever", if (Stats.best > 0) Blocking.formatDuration(maxOf(Stats.best, Blocking.awayMillis(now))) else "–", Modifier.weight(1f))
+        }
+    }
+}
+
+@Composable
+private fun StatCell(label: String, value: String, modifier: Modifier = Modifier) {
+    Column(modifier.padding(12.dp)) {
+        Text(value, style = MaterialTheme.typography.titleLarge)
+        Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+@Composable
+private fun PermRow(title: String, why: String, action: String = "Enable", onOpen: () -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
             Text(title, style = MaterialTheme.typography.bodyLarge)
             Text(why, style = MaterialTheme.typography.bodySmall)
         }
-        Button(onClick = onOpen) { Text("Enable") }
+        Button(onClick = onOpen) { Text(action) }
     }
 }
 
@@ -562,20 +654,37 @@ fun AppsScreen() {
 // Digest
 // ---------------------------------------------------------------------------------------------
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DigestScreen() {
+    val ctx = LocalContext.current
     val cs = MaterialTheme.colorScheme
     val version = Prefs.digestVersion.intValue
     val items = remember(version) { Prefs.digest() }
     val urgent = items.count { it.urgent }
+    val held = TriageListener.heldCount.intValue
 
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PagePad, verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item {
             PageHeader(
                 "Digest",
-                if (items.isEmpty()) "Held notifications appear here" else "${items.size} held · $urgent urgent",
+                when {
+                    items.isEmpty() -> "Held notifications appear here"
+                    else -> "Last 24 hours · ${items.size} total · $urgent urgent"
+                },
             ) {
                 if (items.isNotEmpty()) TextButton(onClick = { Prefs.clearDigest() }) { Text("Clear") }
+            }
+        }
+        if (held > 0) {
+            item {
+                Panel {
+                    SettingRow("$held held right now", "They return when Focus ends") {
+                        FilledTonalButton(onClick = { TriageListener.releaseNow() }, modifier = Modifier.padding(end = 12.dp)) {
+                            Text("Release all")
+                        }
+                    }
+                }
             }
         }
         if (items.isEmpty()) {
@@ -587,20 +696,43 @@ fun DigestScreen() {
                     Text("Turn on Focus with Hold notifications.", style = MaterialTheme.typography.bodyMedium, color = cs.onSurfaceVariant)
                 }
             }
+        } else {
+            item {
+                Text(
+                    "Tap to open the app. Swipe to dismiss.",
+                    Modifier.padding(start = 4.dp, bottom = 4.dp),
+                    style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant,
+                )
+            }
         }
-        items(items) { d ->
-            Panel {
-                Column(Modifier.padding(horizontal = 20.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            "${d.app} · ${clock(d.time)}", Modifier.weight(1f),
-                            style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant,
-                        )
-                        if (d.urgent) Pill("Urgent", cs.primary, cs.onPrimary)
+        items(items, key = { "${it.time}_${it.app}_${it.title.hashCode()}" }) { d ->
+            val state = rememberSwipeToDismissBoxState(confirmValueChange = { v ->
+                if (v != SwipeToDismissBoxValue.Settled) { Prefs.removeDigest(d); true } else false
+            })
+            SwipeToDismissBox(
+                state = state,
+                backgroundContent = {
+                    Box(
+                        Modifier.fillMaxSize().clip(RoundedCornerShape(24.dp)).background(cs.surfaceContainerHigh)
+                            .padding(horizontal = 24.dp),
+                        contentAlignment = if (state.dismissDirection == SwipeToDismissBoxValue.StartToEnd) Alignment.CenterStart else Alignment.CenterEnd,
+                    ) { Text("Dismiss", style = MaterialTheme.typography.labelLarge, color = cs.onSurfaceVariant) }
+                },
+            ) {
+                val launch = remember(d.pkg) { d.pkg.takeIf { it.isNotBlank() }?.let { ctx.packageManager.getLaunchIntentForPackage(it) } }
+                Panel(Modifier.clip(RoundedCornerShape(24.dp)).clickable(enabled = launch != null) { launch?.let { ctx.startActivity(it) } }) {
+                    Column(Modifier.padding(horizontal = 20.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                "${d.app} · ${clock(d.time)}", Modifier.weight(1f),
+                                style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant,
+                            )
+                            if (d.urgent) Pill("Urgent", cs.primary, cs.onPrimary)
+                        }
+                        if (d.title.isNotBlank()) Text(d.title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (d.text.isNotBlank()) Text(d.text, style = MaterialTheme.typography.bodyMedium, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                        if (d.reason.isNotBlank()) Text(d.reason, style = MaterialTheme.typography.bodySmall, color = cs.primary)
                     }
-                    if (d.title.isNotBlank()) Text(d.title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    if (d.text.isNotBlank()) Text(d.text, style = MaterialTheme.typography.bodyMedium, maxLines = 3, overflow = TextOverflow.Ellipsis)
-                    if (d.reason.isNotBlank()) Text(d.reason, style = MaterialTheme.typography.bodySmall, color = cs.primary)
                 }
             }
         }
