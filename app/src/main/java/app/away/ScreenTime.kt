@@ -46,31 +46,38 @@ object UsageTracker {
         val events = runCatching { usm.queryEvents(from, to) }.getOrNull() ?: return emptyMap()
         val skip = ignored(ctx)
         val totals = HashMap<String, Long>()
-        // Package to the time its activity came to the foreground; an app can have several activities.
-        val open = HashMap<String, Long>()
+        // An app is in use while any of its activities is resumed. Track them per class: during a
+        // screen change the old activity's pause can arrive after the new one's resume, and a plain
+        // per-app flag would then lose the whole stretch (this dropped a 40 minute video).
+        val classes = HashMap<String, MutableSet<String>>()
+        val since = HashMap<String, Long>()
+        fun close(pkg: String, at: Long) {
+            classes.remove(pkg)
+            val s0 = since.remove(pkg) ?: return
+            if (at > s0) totals[pkg] = (totals[pkg] ?: 0L) + (at - s0)
+        }
         val e = UsageEvents.Event()
         while (events.hasNextEvent()) {
             events.getNextEvent(e)
             val pkg = e.packageName ?: continue
             if (pkg in skip) continue
+            val cls = e.className ?: ""
             when (e.eventType) {
                 UsageEvents.Event.ACTIVITY_RESUMED -> {
                     // Another app coming forward ends any app whose pause event was never delivered.
-                    val stale = open.filterKeys { it != pkg }
-                    stale.forEach { (p, s) ->
-                        if (e.timeStamp > s) totals[p] = (totals[p] ?: 0L) + (e.timeStamp - s)
-                        open.remove(p)
-                    }
-                    if (pkg !in open) open[pkg] = e.timeStamp
+                    since.keys.filter { it != pkg }.forEach { close(it, e.timeStamp) }
+                    classes.getOrPut(pkg) { HashSet() }.add(cls)
+                    since.putIfAbsent(pkg, e.timeStamp)
                 }
-                UsageEvents.Event.ACTIVITY_PAUSED, UsageEvents.Event.ACTIVITY_STOPPED -> {
-                    val s = open.remove(pkg)
-                    if (s != null && e.timeStamp > s) totals[pkg] = (totals[pkg] ?: 0L) + (e.timeStamp - s)
+                UsageEvents.Event.ACTIVITY_PAUSED -> {
+                    val set = classes[pkg] ?: continue
+                    set.remove(cls)
+                    if (set.isEmpty()) close(pkg, e.timeStamp)
                 }
             }
         }
         // Still in the foreground right now.
-        open.forEach { (pkg, s) -> if (to > s) totals[pkg] = (totals[pkg] ?: 0L) + (to - s) }
+        since.keys.toList().forEach { close(it, to) }
         return totals
     }
 
