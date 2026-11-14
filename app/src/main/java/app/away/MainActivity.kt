@@ -464,7 +464,7 @@ fun HomeScreen(onRunSetup: () -> Unit = {}) {
                 Column(Modifier.weight(1f)) {
                     Text("Lock screen timer", style = MaterialTheme.typography.titleMedium)
                     Text(
-                        if (after == 0) "Shown whenever the phone is idle" else "Appears after ${Blocking.formatDuration(after * 60_000L)} untouched",
+                        if (after == 0) "Shown whenever the phone is idle" else "Appears after ${fmtUse(after * 60_000L)} untouched",
                         style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant,
                     )
                 }
