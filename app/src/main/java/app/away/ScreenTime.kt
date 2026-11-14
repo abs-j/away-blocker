@@ -104,8 +104,35 @@ object UsageTracker {
         return cache
     }
 
+    @Volatile private var neverCache: Set<String>? = null
+
+    /**
+     * Apps that are never limited or blocked, so Away can never lock you out of calling, texting,
+     * maps or Settings (where Away itself is switched off). Found by what the phone uses for each job.
+     */
+    fun neverBlock(ctx: Context): Set<String> {
+        neverCache?.let { return it }
+        val pm = ctx.packageManager
+        fun handlers(i: Intent) = pm.queryIntentActivities(i, 0).map { it.activityInfo.packageName }
+        val found = HashSet<String>()
+        found += handlers(Intent(Intent.ACTION_DIAL))
+        found += handlers(Intent(Intent.ACTION_SENDTO, android.net.Uri.parse("smsto:")))
+        found += handlers(Intent(android.provider.Settings.ACTION_SETTINGS))
+        found += handlers(Intent(Intent.ACTION_VIEW, android.net.Uri.parse("geo:0,0")))
+        found += listOf(
+            "com.android.settings", "com.android.phone", "com.android.contacts", "com.android.emergency",
+            "com.google.android.dialer", "com.google.android.apps.messaging", "com.google.android.apps.maps",
+            "com.samsung.android.dialer", "com.samsung.android.messaging", "com.samsung.android.app.contacts",
+            "com.android.vending", ctx.packageName,
+        )
+        return found.also { neverCache = it }
+    }
+
+    fun isNeverBlock(pkg: String): Boolean = ::app.isInitialized && pkg in neverBlock(app)
+
     /** True when [pkg] has a daily limit and today's use has reached it. */
     fun overLimit(pkg: String, now: Long = System.currentTimeMillis()): Boolean {
+        if (isNeverBlock(pkg)) return false
         val limit = Prefs.limits[pkg] ?: return false
         return (todayCached(now)[pkg] ?: 0L) >= limit * 60_000L
     }

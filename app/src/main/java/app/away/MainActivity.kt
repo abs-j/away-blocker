@@ -16,6 +16,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -29,6 +30,7 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -77,16 +79,12 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
@@ -103,6 +101,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -145,26 +144,6 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Theme: always dark to match the launcher, coloured from the wallpaper on Android 12+.
-// ---------------------------------------------------------------------------------------------
-
-@Composable
-fun AwayTheme(content: @Composable () -> Unit) {
-    val ctx = LocalContext.current
-    val scheme = if (Build.VERSION.SDK_INT >= 31) {
-        dynamicDarkColorScheme(ctx)
-    } else {
-        darkColorScheme(
-            primary = Color(0xFFB9C3FF), onPrimary = Color(0xFF1B2A6B),
-            primaryContainer = Color(0xFF333F80), onPrimaryContainer = Color(0xFFDDE1FF),
-            background = Color(0xFF111318), surface = Color(0xFF111318),
-            surfaceContainer = Color(0xFF1D1F25), surfaceContainerHigh = Color(0xFF272A30),
-        )
-    }
-    MaterialTheme(colorScheme = scheme, content = content)
-}
-
 private data class Tab(val label: String, val on: ImageVector, val off: ImageVector)
 
 private val TABS = listOf(
@@ -175,41 +154,46 @@ private val TABS = listOf(
     Tab("Launcher", Icons.Filled.Home, Icons.Outlined.Home),
 )
 
-/** Five screens you can swipe between; the bottom bar follows the swipe and jumps on tap. */
+/** Five screens you can swipe between; the glass bar follows the swipe and jumps on tap. */
 @Composable
 fun App(startTab: Int = 0, onRunSetup: () -> Unit = {}) {
     val pager = rememberPagerState(initialPage = startTab.coerceIn(0, TABS.lastIndex)) { TABS.size }
     val scope = rememberCoroutineScope()
     val haptic = LocalHapticFeedback.current
     LaunchedEffect(pager.settledPage) { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove) }
+    val navItems = remember { TABS.map { NavItem(it.label, it.on, it.off) } }
 
-    Scaffold(
-        containerColor = MaterialTheme.colorScheme.surface,
-        bottomBar = {
-            NavigationBar(containerColor = MaterialTheme.colorScheme.surfaceContainer) {
-                TABS.forEachIndexed { i, t ->
-                    val selected = pager.targetPage == i
-                    NavigationBarItem(
-                        selected = selected,
-                        onClick = { scope.launch { pager.animateScrollToPage(i) } },
-                        icon = { Icon(if (selected) t.on else t.off, contentDescription = null) },
-                        label = { Text(t.label) },
-                    )
+    Box(Modifier.fillMaxSize()) {
+        AmbientBackground()
+        Scaffold(
+            containerColor = Color.Transparent,
+            bottomBar = { GlassNav(pager, navItems) { scope.launch { pager.animateScrollToPage(it, animationSpec = androidx.compose.animation.core.spring(dampingRatio = 0.85f, stiffness = 260f)) } } },
+        ) { pad ->
+            HorizontalPager(
+                state = pager,
+                modifier = Modifier.fillMaxSize().padding(pad),
+                beyondViewportPageCount = 1,
+            ) { page ->
+                val offset = { (pager.currentPage - page) + pager.currentPageOffsetFraction }
+                androidx.compose.runtime.CompositionLocalProvider(LocalPageOffset provides offset) {
+                    Box(
+                        Modifier.fillMaxSize().graphicsLayer {
+                            // Pages recede and fade as they leave, and rise into focus as they arrive.
+                            val o = kotlin.math.abs(offset()).coerceIn(0f, 1f)
+                            alpha = 1f - 0.65f * o
+                            scaleX = 1f - 0.06f * o
+                            scaleY = 1f - 0.06f * o
+                        },
+                    ) {
+                        when (page) {
+                            0 -> HomeScreen(onRunSetup)
+                            1 -> ScreenTimeScreen()
+                            2 -> DigestScreen()
+                            3 -> AiScreen()
+                            else -> LauncherSettingsScreen()
+                        }
+                    }
                 }
-            }
-        },
-    ) { pad ->
-        HorizontalPager(
-            state = pager,
-            modifier = Modifier.fillMaxSize().padding(pad),
-            beyondViewportPageCount = 1,
-        ) { page ->
-            when (page) {
-                0 -> HomeScreen(onRunSetup)
-                1 -> ScreenTimeScreen()
-                2 -> DigestScreen()
-                3 -> AiScreen()
-                else -> LauncherSettingsScreen()
             }
         }
     }
@@ -237,11 +221,11 @@ private fun PageHeader(title: String, subtitle: String? = null, trailing: @Compo
 /** Rounded surface that groups related rows. */
 @Composable
 private fun Panel(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
-    Card(
-        modifier = modifier.fillMaxWidth().animateContentSize(),
-        shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
-    ) { Column(Modifier.padding(vertical = 8.dp), content = content) }
+    Column(
+        modifier.fillMaxWidth().animateContentSize(androidx.compose.animation.core.spring(stiffness = 400f)).glass(RoundedCornerShape(28.dp))
+            .padding(vertical = 8.dp),
+        content = content,
+    )
 }
 
 @Composable
@@ -258,9 +242,14 @@ private fun SectionLabel(text: String) {
 /** A row with a title, optional description and a trailing switch. The whole row toggles. */
 @Composable
 private fun ToggleRow(title: String, subtitle: String?, checked: Boolean, enabled: Boolean = true, onChange: (Boolean) -> Unit) {
+    val src = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    val haptic = LocalHapticFeedback.current
     Row(
-        Modifier.fillMaxWidth()
-            .toggleable(value = checked, enabled = enabled, role = Role.Switch, onValueChange = onChange)
+        Modifier.fillMaxWidth().pressScale(src, 0.985f)
+            .toggleable(
+                value = checked, enabled = enabled, role = Role.Switch, interactionSource = src, indication = null,
+                onValueChange = { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); onChange(it) },
+            )
             .padding(horizontal = 20.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -271,9 +260,16 @@ private fun ToggleRow(title: String, subtitle: String?, checked: Boolean, enable
                 Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
-        Switch(checked = checked, onCheckedChange = null, enabled = enabled)
+        Switch(checked = checked, onCheckedChange = null, enabled = enabled, colors = awaySwitchColors())
     }
 }
+
+@Composable
+private fun awaySwitchColors() = androidx.compose.material3.SwitchDefaults.colors(
+    checkedTrackColor = Glow.Indigo, checkedThumbColor = Color.White, checkedBorderColor = Color.Transparent,
+    uncheckedTrackColor = Color.White.copy(alpha = 0.08f), uncheckedThumbColor = Glow.InkDim,
+    uncheckedBorderColor = Color.White.copy(alpha = 0.18f),
+)
 
 /** A row with a title, optional value underneath and trailing actions. */
 @Composable
@@ -344,6 +340,7 @@ private fun clock(ms: Long) = SimpleDateFormat("HH:mm", Locale.getDefault()).for
 // Focus
 // ---------------------------------------------------------------------------------------------
 
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun HomeScreen(onRunSetup: () -> Unit = {}) {
     val ctx = LocalContext.current
@@ -396,36 +393,62 @@ fun HomeScreen(onRunSetup: () -> Unit = {}) {
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Spacer(Modifier.height(12.dp))
-        // Hero: the distraction-free timer.
-        val heroTop by animateColorAsState(if (active) cs.primaryContainer else cs.surfaceContainerHigh, label = "hero")
+        // Hero: the distraction-free timer, as a glowing ring that fills toward the next milestone.
+        val away = Blocking.awayMillis(now)
+        val milestones = remember { listOf(15L, 60L, 180L, 480L, 1440L, 4320L).map { it * 60_000L } }
+        val prevMark = milestones.lastOrNull { it <= away } ?: 0L
+        val nextMark = milestones.firstOrNull { it > away } ?: (milestones.last() * 2)
+        val shown = remember { androidx.compose.animation.core.Animatable(0f) }
+        LaunchedEffect(away / 60_000L) {
+            shown.animateTo((away / 60_000L).toFloat(), androidx.compose.animation.core.tween(1500, easing = androidx.compose.animation.core.FastOutSlowInEasing))
+        }
         Box(
-            Modifier.fillMaxWidth().clip(RoundedCornerShape(28.dp))
-                .background(Brush.verticalGradient(listOf(heroTop, cs.surfaceContainer)))
-                .padding(24.dp),
+            Modifier.fillMaxWidth().staggerIn(0).cascade(0)
+                .glass(RoundedCornerShape(34.dp), 0.05f)
+                .background(Brush.verticalGradient(listOf(Glow.Indigo.copy(alpha = if (active) 0.34f else 0.16f), Glow.Violet.copy(alpha = 0.08f), Color.Transparent)))
+                .padding(horizontal = 20.dp, vertical = 22.dp),
         ) {
-            Column {
-                Text("Since a distracting app", style = MaterialTheme.typography.labelLarge, color = cs.onSurfaceVariant)
-                val away = Blocking.awayMillis(now)
-                Text(Blocking.formatDuration(away), fontSize = 64.sp, fontWeight = FontWeight.Light, color = cs.onSurface)
+            Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("SINCE A DISTRACTING APP", style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant, letterSpacing = 1.6.sp)
+                StreakRing(((away - prevMark).toFloat() / (nextMark - prevMark)).coerceIn(0f, 1f), Modifier.fillMaxWidth(0.8f).padding(vertical = 4.dp)) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            Blocking.formatDuration((shown.value * 60_000L).toLong()),
+                            style = MaterialTheme.typography.displayLarge.copy(fontSize = 44.sp),
+                            maxLines = 1, softWrap = false, color = cs.onSurface,
+                        )
+                        Text("next: ${fmtUse(nextMark)}", style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant)
+                    }
+                }
                 Text(
                     Motivation.line(away, Stats.best, maxOf(Prefs.lastUse, Prefs.installTime)),
-                    style = MaterialTheme.typography.titleMedium, color = cs.onSurface,
+                    style = MaterialTheme.typography.titleMedium, color = cs.onSurface, textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                 )
-                Spacer(Modifier.height(12.dp))
-                Pill(
-                    when {
-                        active -> "Focus on"
-                        enabled && sched -> "Focus starts ${fmtTime(start)}"
-                        else -> "Focus off"
-                    },
-                    container = if (active) cs.primary else cs.surfaceContainerHigh,
-                    content = if (active) cs.onPrimary else cs.onSurfaceVariant,
+                Spacer(Modifier.height(14.dp))
+                val dot by androidx.compose.animation.core.rememberInfiniteTransition(label = "dot").animateFloat(
+                    0.35f, 1f,
+                    androidx.compose.animation.core.infiniteRepeatable(androidx.compose.animation.core.tween(1100), androidx.compose.animation.core.RepeatMode.Reverse),
+                    label = "dot",
                 )
+                Row(
+                    Modifier.glass(CircleShape, if (active) 0.12f else 0.06f).padding(horizontal = 14.dp, vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Box(Modifier.size(8.dp).graphicsLayer { alpha = if (active) dot else 0.5f }.clip(CircleShape).background(if (active) Glow.Mint else cs.onSurfaceVariant))
+                    Text(
+                        when {
+                            active -> "Focus on"
+                            enabled && sched -> "Focus starts ${fmtTime(start)}"
+                            else -> "Focus off"
+                        },
+                        style = MaterialTheme.typography.labelLarge, color = if (active) cs.onSurface else cs.onSurfaceVariant,
+                    )
+                }
             }
         }
 
         // Focus settings.
-        Panel {
+        Panel(Modifier.staggerIn(1).cascade(1)) {
             Row(Modifier.fillMaxWidth().toggleable(enabled, role = Role.Switch, onValueChange = {
                 enabled = it; Prefs.enabled = it; TriageListener.syncNow()
             }).padding(horizontal = 20.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -433,7 +456,7 @@ fun HomeScreen(onRunSetup: () -> Unit = {}) {
                     Text("Focus", style = MaterialTheme.typography.titleLarge)
                     Text(status, style = MaterialTheme.typography.bodyMedium, color = if (active) cs.primary else cs.onSurfaceVariant)
                 }
-                Switch(checked = enabled, onCheckedChange = null)
+                Switch(checked = enabled, onCheckedChange = null, colors = awaySwitchColors())
             }
             Divider()
             ToggleRow("Hide distracting apps", "Blocked, and hidden from the launcher", blocksApps) {
@@ -458,7 +481,7 @@ fun HomeScreen(onRunSetup: () -> Unit = {}) {
             }
         }
 
-        Panel {
+        Panel(Modifier.staggerIn(2).cascade(2)) {
             var after by remember { mutableIntStateOf(Prefs.indicatorAfterMin) }
             Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
@@ -470,6 +493,30 @@ fun HomeScreen(onRunSetup: () -> Unit = {}) {
                 }
                 TextButton(onClick = { after = (after - 15).coerceAtLeast(0); Prefs.indicatorAfterMin = after }) { Text("-15m") }
                 TextButton(onClick = { after = (after + 15).coerceAtMost(24 * 60); Prefs.indicatorAfterMin = after }) { Text("+15m") }
+            }
+        }
+
+        Panel(Modifier.staggerIn(3).cascade(3)) {
+            var mode by remember { mutableIntStateOf(Prefs.unlockPause) }
+            Column(Modifier.padding(horizontal = 20.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Unlock pause", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    when (mode) {
+                        0 -> "Off"
+                        1 -> "A 5 second pause after every unlock, to think before you go in"
+                        2 -> "A 5 second pause after unlocking during Focus hours"
+                        else -> "A 5 second pause when you have gone an hour or more without a distracting app"
+                    },
+                    style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant,
+                )
+                androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("Off", "Every unlock", "Focus hours", "Streak 1h+").forEachIndexed { i, label ->
+                        FilterChip(
+                            selected = mode == i, onClick = { mode = i; Prefs.unlockPause = i },
+                            label = { Text(label, maxLines = 1, softWrap = false) },
+                        )
+                    }
+                }
             }
         }
 
@@ -749,7 +796,7 @@ fun DigestScreen() {
         }
         if (held > 0) {
             item {
-                Panel {
+                Panel(Modifier.cascade(1)) {
                     SettingRow("$held held right now", "They return when Focus ends") {
                         FilledTonalButton(onClick = { TriageListener.releaseNow() }, modifier = Modifier.padding(end = 12.dp)) {
                             Text("Release all")
@@ -760,13 +807,15 @@ fun DigestScreen() {
         }
         if (rules.isNotEmpty()) {
             item {
-                Panel {
+                Panel(Modifier.cascade(1)) {
                     Text("Not held", Modifier.padding(horizontal = 20.dp, vertical = 8.dp), style = MaterialTheme.typography.titleMedium)
-                    rules.forEach { (pkg, until) ->
+                    rules.forEach { (key, until) ->
+                        val pkg = key.substringBefore('|')
+                        val chat = key.substringAfter('|', "").replaceFirstChar { it.uppercase() }
                         SettingRow(
-                            appLabel(ctx, pkg),
+                            appLabel(ctx, pkg) + if (chat.isNotBlank()) " · $chat" else "",
                             if (until == Prefs.PASS_ALWAYS) "Always comes through" else "Comes through until ${clock(until)}",
-                        ) { TextButton(onClick = { Prefs.clearPass(pkg) }) { Text("Hold again") } }
+                        ) { TextButton(onClick = { Prefs.clearPass(key) }) { Text("Hold again") } }
                     }
                 }
             }
@@ -795,12 +844,16 @@ fun DigestScreen() {
             })
             SwipeToDismissBox(
                 state = state,
+                modifier = Modifier.animateItem().cascade(2),
                 backgroundContent = {
-                    Box(
-                        Modifier.fillMaxSize().clip(RoundedCornerShape(24.dp)).background(cs.surfaceContainerHigh)
-                            .padding(horizontal = 24.dp),
-                        contentAlignment = if (state.dismissDirection == SwipeToDismissBoxValue.StartToEnd) Alignment.CenterStart else Alignment.CenterEnd,
-                    ) { Text("Dismiss", style = MaterialTheme.typography.labelLarge, color = cs.onSurfaceVariant) }
+                    // The card is translucent glass, so the hint must only exist while a swipe is under way.
+                    if (state.dismissDirection != SwipeToDismissBoxValue.Settled) {
+                        Box(
+                            Modifier.fillMaxSize().clip(RoundedCornerShape(28.dp)).background(Glow.Rose.copy(alpha = 0.18f))
+                                .padding(horizontal = 28.dp),
+                            contentAlignment = if (state.dismissDirection == SwipeToDismissBoxValue.StartToEnd) Alignment.CenterStart else Alignment.CenterEnd,
+                        ) { Text("Dismiss", style = MaterialTheme.typography.labelLarge, color = Glow.Rose) }
+                    }
                 },
             ) {
                 val launch = remember(d.pkg) { d.pkg.takeIf { it.isNotBlank() }?.let { ctx.packageManager.getLaunchIntentForPackage(it) } }
@@ -817,20 +870,31 @@ fun DigestScreen() {
                         if (d.text.isNotBlank()) Text(d.text, style = MaterialTheme.typography.bodyMedium, maxLines = 3, overflow = TextOverflow.Ellipsis)
                         if (d.reason.isNotBlank()) Text(d.reason, style = MaterialTheme.typography.bodySmall, color = cs.primary)
                         if (d.pkg.isNotBlank()) {
-                            val until = rules[d.pkg]
+                            val chatKey = Prefs.passKey(d.pkg, d.title)
+                            val until = rules[d.pkg] ?: rules[chatKey]
+                            val canScope = d.title.isNotBlank()
+                            var wholeApp by remember(d.pkg, d.title) { mutableStateOf(!canScope) }
+                            val target = if (canScope && !wholeApp) "“${d.title}”" else d.app
                             if (until != null) {
                                 Text(
-                                    if (until == Prefs.PASS_ALWAYS) "${d.app} is never held" else "${d.app} is not held until ${clock(until)}",
+                                    if (until == Prefs.PASS_ALWAYS) "$target is never held" else "$target is not held until ${clock(until)}",
                                     style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant,
                                 )
                             } else {
-                                Text("Don't hold ${d.app} for", style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant)
+                                if (canScope) {
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        FilterChip(selected = !wholeApp, onClick = { wholeApp = false }, label = { Text("This chat", maxLines = 1, softWrap = false) })
+                                        FilterChip(selected = wholeApp, onClick = { wholeApp = true }, label = { Text("All of ${d.app}", maxLines = 1, softWrap = false) })
+                                    }
+                                }
+                                Text("Don't hold $target for", style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     listOf("30 min" to 30, "1 hour" to 60, "4 hours" to 240, "Always" to -1).forEach { (label, mins) ->
                                         AssistChip(
                                             onClick = {
-                                                Prefs.setPass(d.pkg, if (mins < 0) Prefs.PASS_ALWAYS else System.currentTimeMillis() + mins * 60_000L)
-                                                TriageListener.releaseApp(d.pkg)
+                                                val key = if (wholeApp) d.pkg else chatKey
+                                                Prefs.setPass(key, if (mins < 0) Prefs.PASS_ALWAYS else System.currentTimeMillis() + mins * 60_000L)
+                                                TriageListener.releaseApp(d.pkg, if (wholeApp) null else d.title)
                                             },
                                             label = { Text(label, maxLines = 1, softWrap = false) },
                                         )
@@ -890,7 +954,7 @@ fun AiScreen() {
                     Text("$calls / ${Prefs.DAILY_CAP}", style = MaterialTheme.typography.bodyMedium, color = cs.onSurfaceVariant)
                 }
                 Spacer(Modifier.height(8.dp))
-                LinearProgressIndicator(progress = { calls / Prefs.DAILY_CAP.toFloat() }, modifier = Modifier.fillMaxWidth())
+                LimitBar(calls / Prefs.DAILY_CAP.toFloat())
             }
             if (Prefs.lastError.isNotBlank()) {
                 Text(
@@ -1147,6 +1211,20 @@ private fun AppPickerDialog(
 // Screen time
 // ---------------------------------------------------------------------------------------------
 
+@Composable
+private fun LimitBar(fraction: Float) {
+    val f by androidx.compose.animation.core.animateFloatAsState(
+        fraction.coerceIn(0f, 1f), androidx.compose.animation.core.spring(dampingRatio = 0.8f, stiffness = 80f), label = "limit",
+    )
+    val c = when { f >= 1f -> Glow.Rose; f > 0.75f -> Glow.Amber; else -> Glow.Mint }
+    Box(Modifier.fillMaxWidth().height(7.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.08f))) {
+        Box(
+            Modifier.fillMaxWidth(f).fillMaxHeight().clip(CircleShape)
+                .background(Brush.horizontalGradient(listOf(c.copy(alpha = 0.55f), c))),
+        )
+    }
+}
+
 /** Usage for today and the week, with daily limits per app; the distracting-apps list lives behind a toggle. */
 @Composable
 fun ScreenTimeScreen() {
@@ -1187,8 +1265,7 @@ private fun UsageContent() {
     var limits by remember { mutableStateOf(Prefs.limits) }
     var editing by remember { mutableStateOf<String?>(null) }
     val labels = remember { Apps.loadAll(ctx).associate { it.pkg to it.label } }
-    val pickups = Stats.lastDays(1).last().pickups
-    Stats.version.intValue
+    val pickups = remember(Stats.version.intValue) { Stats.lastDays(1).last().pickups }
 
     LaunchedEffect(Unit) {
         while (true) {
@@ -1203,7 +1280,13 @@ private fun UsageContent() {
     }
 
     editing?.let { pkg ->
-        var mins by remember(pkg) { mutableIntStateOf(limits[pkg] ?: 30) }
+        val existing = limits[pkg]
+        var mins by remember(pkg) { mutableIntStateOf(existing ?: 30) }
+        // Loosening a limit (higher, or removing it) takes a 30 second wait, like unlocking apps in Focus.
+        var wait by remember(pkg) { mutableIntStateOf(if (existing != null) 30 else 0) }
+        LaunchedEffect(pkg, wait) { if (wait > 0) { delay(1000); wait -= 1 } }
+        val loosening = existing != null && mins > existing
+        val locked = wait > 0 && loosening
         AlertDialog(
             onDismissRequest = { editing = null },
             title = { Text("Daily limit for ${labels[pkg] ?: pkg}") },
@@ -1218,15 +1301,20 @@ private fun UsageContent() {
                     Row {
                         TextButton(onClick = { mins = (mins - 5).coerceAtLeast(5) }) { Text("-5m") }
                         TextButton(onClick = { mins = (mins + 5).coerceAtMost(12 * 60) }) { Text("+5m") }
-                        if (pkg in limits) TextButton(onClick = {
+                        if (pkg in limits) TextButton(enabled = wait == 0, onClick = {
                             limits = limits - pkg; Prefs.limits = limits; editing = null
-                        }) { Text("Remove limit") }
+                        }) { Text(if (wait > 0) "Remove in ${wait}s" else "Remove limit") }
                     }
-                    Text("The app is blocked for the rest of the day once you reach it.", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+                    Text(
+                        if (existing != null) "Lowering a limit is instant. Raising or removing it takes 30 seconds."
+                        else "The app is blocked for the rest of the day once you reach it.",
+                        style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
                 }
             },
             confirmButton = {
-                TextButton(onClick = { limits = limits + (pkg to mins); Prefs.limits = limits; editing = null }) { Text("Set") }
+                TextButton(enabled = !locked, onClick = { limits = limits + (pkg to mins); Prefs.limits = limits; editing = null }) {
+                    Text(if (locked) "Set in ${wait}s" else "Set")
+                }
             },
             dismissButton = { TextButton(onClick = { editing = null }) { Text("Cancel") } },
         )
@@ -1234,7 +1322,7 @@ private fun UsageContent() {
 
     val rows = today.filterKeys { it in labels }.entries.sortedByDescending { it.value }.take(25)
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PagePad, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { PageHeader("Screen time", "Today, per app. Tap an app to set a daily limit.") }
+        item { PageHeader("Screen time", "Today, per app. Tap an app to set a daily limit. Phone, Messages, Maps and Settings are never limited.") }
         if (!access) {
             item {
                 Panel {
@@ -1253,23 +1341,36 @@ private fun UsageContent() {
         item {
             val total = today.filterKeys { it in labels }.values.sum()
             val yesterday = daily.getOrNull(daily.size - 2) ?: 0L
+            val shown = remember { androidx.compose.animation.core.Animatable(0f) }
+            LaunchedEffect(total / 60_000L) {
+                shown.animateTo((total / 60_000L).toFloat(), androidx.compose.animation.core.tween(1300, easing = androidx.compose.animation.core.FastOutSlowInEasing))
+            }
             Box(
-                Modifier.fillMaxWidth().clip(RoundedCornerShape(28.dp))
-                    .background(Brush.verticalGradient(listOf(cs.primaryContainer, cs.surfaceContainer))).padding(24.dp),
+                Modifier.fillMaxWidth().staggerIn(0).cascade(0).glass(RoundedCornerShape(32.dp), 0.05f)
+                    .background(Brush.verticalGradient(listOf(Glow.Violet.copy(alpha = 0.26f), Glow.Indigo.copy(alpha = 0.08f), Color.Transparent)))
+                    .padding(24.dp),
             ) {
                 Column {
-                    Text("Today", style = MaterialTheme.typography.labelLarge, color = cs.onSurfaceVariant)
-                    Text(fmtUse(total), fontSize = 56.sp, fontWeight = FontWeight.Light, color = cs.onSurface)
-                    Text(
-                        "$pickups pickups" + if (yesterday > 0) " · yesterday ${fmtUse(yesterday)}" else "",
-                        style = MaterialTheme.typography.bodyMedium, color = cs.onSurface,
-                    )
+                    Text("TODAY", style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant, letterSpacing = 1.6.sp)
+                    Text(fmtUse((shown.value * 60_000L).toLong()), style = MaterialTheme.typography.displayLarge, color = cs.onSurface, maxLines = 1, softWrap = false)
+                    Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("$pickups pickups", Modifier.glass(CircleShape, 0.08f).padding(horizontal = 12.dp, vertical = 6.dp), style = MaterialTheme.typography.labelLarge, color = cs.onSurface)
+                        if (yesterday > 0) {
+                            val lower = total <= yesterday
+                            Text(
+                                (if (lower) "↓ " else "↑ ") + "vs ${fmtUse(yesterday)} yesterday",
+                                Modifier.glass(CircleShape, 0.08f).padding(horizontal = 12.dp, vertical = 6.dp),
+                                style = MaterialTheme.typography.labelLarge, color = if (lower) Glow.Mint else Glow.Amber,
+                            )
+                        }
+                    }
                 }
             }
         }
         if (daily.isNotEmpty()) {
             item {
-                Panel {
+                Panel(Modifier.staggerIn(1).cascade(1)) {
                     val max = (daily.maxOrNull() ?: 0L).coerceAtLeast(1L)
                     val fmt = remember { SimpleDateFormat("EEE", Locale.getDefault()) }
                     val now = System.currentTimeMillis()
@@ -1281,10 +1382,19 @@ private fun UsageContent() {
                             val day = fmt.format(Date(now - (daily.size - 1 - i) * 86_400_000L))
                             Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
                                 Text(fmtHm(ms), style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant, maxLines = 1, softWrap = false)
+                                var grown by remember { mutableStateOf(false) }
+                                LaunchedEffect(daily) { delay(120L + i * 70L); grown = true }
+                                val barH by androidx.compose.animation.core.animateDpAsState(
+                                    if (grown) maxOf(3L, 72L * ms / max).toInt().dp else 3.dp,
+                                    androidx.compose.animation.core.spring(dampingRatio = 0.55f, stiffness = 120f), label = "bar",
+                                )
                                 Box(
-                                    Modifier.padding(vertical = 4.dp).width(20.dp).height(maxOf(3L, 72L * ms / max).toInt().dp)
-                                        .clip(RoundedCornerShape(6.dp))
-                                        .background(if (i == daily.lastIndex) cs.primary else cs.surfaceContainerHigh),
+                                    Modifier.padding(vertical = 4.dp).width(20.dp).height(barH)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(
+                                            if (i == daily.lastIndex) Brush.verticalGradient(listOf(Glow.Violet, Glow.Indigo))
+                                            else Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.20f), Color.White.copy(alpha = 0.07f))),
+                                        ),
                                 )
                                 Text(day, style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant)
                             }
@@ -1298,10 +1408,10 @@ private fun UsageContent() {
             item { Hint("No app use recorded yet today.") }
         } else {
             item {
-                Panel {
+                Panel(Modifier.staggerIn(2).cascade(2)) {
                     rows.forEachIndexed { i, (pkg, ms) ->
                         val limit = limits[pkg]
-                        Column(Modifier.fillMaxWidth().clickable { editing = pkg }.padding(horizontal = 20.dp, vertical = 10.dp)) {
+                        Column(Modifier.fillMaxWidth().clickable(enabled = !UsageTracker.isNeverBlock(pkg)) { editing = pkg }.padding(horizontal = 20.dp, vertical = 10.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(labels[pkg] ?: pkg, Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 Text(
@@ -1312,7 +1422,7 @@ private fun UsageContent() {
                             }
                             if (limit != null) {
                                 Spacer(Modifier.height(6.dp))
-                                LinearProgressIndicator(progress = { (ms / (limit * 60_000f)).coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth())
+                                LimitBar(ms / (limit * 60_000f))
                             }
                         }
                         if (i < rows.lastIndex) Divider()
