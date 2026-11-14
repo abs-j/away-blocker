@@ -28,6 +28,8 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
+import android.graphics.Typeface
+import android.view.animation.OvershootInterpolator
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -280,10 +282,15 @@ class BlockerService : AccessibilityService() {
     private fun ensureShield() {
         if (shield != null) return
         val v = TextView(this).apply {
-            setBackgroundColor(Color.BLACK)
+            background = GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(0xFF05060B.toInt(), 0xFF13163A.toInt(), 0xFF05060B.toInt()),
+            )
             text = "Blocked"
-            setTextColor(Color.WHITE)
-            textSize = 22f
+            setTextColor(0xFFEDEEF6.toInt())
+            typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
+            letterSpacing = 0.08f
+            textSize = 26f
             gravity = Gravity.CENTER
             visibility = View.INVISIBLE
         }
@@ -387,13 +394,28 @@ class BlockerService : AccessibilityService() {
             if (inCall()) { hidePause(); return }
             if (pauseLeft > 0) {
                 pauseLeft -= 1
-                v.findViewWithTag<TextView>("count")?.text = pauseLeft.toString()
+                v.findViewWithTag<TextView>("count")?.let { popDigit(it, pauseLeft.toString()) }
             }
-            if (pauseLeft == 0) v.findViewWithTag<View>("go")?.visibility = View.VISIBLE
+            if (pauseLeft == 0) {
+                v.findViewWithTag<View>("go")?.let { go ->
+                    if (go.visibility != View.VISIBLE) {
+                        go.alpha = 0f
+                        go.visibility = View.VISIBLE
+                        go.animate().alpha(1f).setDuration(350).start()
+                    }
+                }
+            }
             handler.postDelayed(this, 1000)
         }
     }
     private val pauseFailsafe = Runnable { hidePause() }
+
+    /** The digit swells then settles with a small overshoot, so each second lands with weight. */
+    private fun popDigit(tv: TextView, text: String) {
+        tv.text = text
+        tv.scaleX = 1.45f; tv.scaleY = 1.45f; tv.alpha = 0.4f
+        tv.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(520).setInterpolator(OvershootInterpolator(2f)).start()
+    }
 
     private fun inCall(): Boolean {
         val mode = getSystemService(AudioManager::class.java).mode
@@ -431,13 +453,20 @@ class BlockerService : AccessibilityService() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
-            setBackgroundColor(Color.BLACK)
+            background = GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(0xFF05060B.toInt(), 0xFF171A45.toInt(), 0xFF05060B.toInt()),
+            )
             setPadding(64, 64, 64, 64)
+            alpha = 0f
         }
         root.addView(label("${Blocking.formatDuration(Blocking.awayMillis(now))} since a distracting app", 18f, Color.LTGRAY))
-        root.addView(label("5", 120f, Color.WHITE).apply { tag = "count" })
+        root.addView(label("5", 132f, Color.WHITE).apply {
+            tag = "count"
+            typeface = Typeface.create("sans-serif-thin", Typeface.NORMAL)
+        })
         root.addView(label(prompts.random(), 20f, Color.WHITE).apply { setPadding(0, 0, 0, 64) })
-        root.addView(btn("Lock phone", "lock", 0xFF3A4A8A.toInt(), Color.WHITE).apply {
+        root.addView(btn("Lock phone", "lock", 0xFF4A5BD8.toInt(), Color.WHITE).apply {
             setOnClickListener { hidePause(); performGlobalAction(GLOBAL_ACTION_LOCK_SCREEN) }
         })
         root.addView(btn("Continue", "go", 0xFF2B2B2B.toInt(), Color.LTGRAY).apply {
@@ -455,6 +484,8 @@ class BlockerService : AccessibilityService() {
         if (runCatching { wm.addView(root, p) }.isFailure) return
         pauseView = root
         pauseLeft = 5
+        root.animate().alpha(1f).setDuration(320).start()
+        root.findViewWithTag<TextView>("count")?.let { popDigit(it, "5") }
         handler.removeCallbacks(pauseTick)
         handler.postDelayed(pauseTick, 1000)
         // Never trap the phone: the overlay removes itself after two minutes whatever happens.
@@ -465,7 +496,10 @@ class BlockerService : AccessibilityService() {
     private fun hidePause() {
         handler.removeCallbacks(pauseTick)
         handler.removeCallbacks(pauseFailsafe)
-        pauseView?.let { runCatching { wm.removeView(it) } }
+        pauseView?.let { v ->
+            // Fade out rather than vanish; the window is removed once the fade ends.
+            v.animate().alpha(0f).setDuration(180).withEndAction { runCatching { wm.removeView(v) } }.start()
+        }
         pauseView = null
     }
 

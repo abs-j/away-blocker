@@ -326,7 +326,14 @@ fun LauncherRoot(resumeRev: Int) {
                 modifier = Modifier.fillMaxSize(),
             )
         }
-        // Scrim keeps white text readable on any wallpaper.
+        // Scrim keeps white text readable on any wallpaper, darker at the top and bottom edges.
+        Box(
+            Modifier.fillMaxSize().background(
+                androidx.compose.ui.graphics.Brush.verticalGradient(
+                    listOf(Color.Black.copy(alpha = 0.40f), Color.Black.copy(alpha = 0.10f), Color.Black.copy(alpha = 0.50f)),
+                ),
+            ),
+        )
         val pinned = Prefs.pinned.mapNotNull { byPkg[it] }.let { if (focus) it.take(FOCUS_LIMIT) else it }
         Column(
             Modifier.fillMaxSize().graphicsLayer { alpha = homeAlpha }
@@ -338,17 +345,17 @@ fun LauncherRoot(resumeRev: Int) {
                     if (android.text.format.DateFormat.is24HourFormat(ctx)) "HH:mm" else "h:mm",
                     Locale.getDefault(),
                 ).format(Date(now)),
-                fontSize = 64.sp, fontWeight = FontWeight.Light,
+                Modifier.staggerIn(0), fontSize = 68.sp, fontWeight = FontWeight.ExtraLight,
             )
-            Text(SimpleDateFormat("EEEE, d MMMM", Locale.getDefault()).format(Date(now)), color = Dim, fontSize = 16.sp)
+            Text(SimpleDateFormat("EEEE, d MMMM", Locale.getDefault()).format(Date(now)), Modifier.staggerIn(1), color = Dim, fontSize = 16.sp)
             val away = Blocking.awayMillis(now)
             Text(
                 Blocking.formatDuration(away) + " away",
-                Modifier.padding(top = 20.dp), fontSize = 30.sp,
+                Modifier.padding(top = 20.dp).staggerIn(2), fontSize = 30.sp,
             )
             Text(
                 Motivation.line(away, Stats.best, maxOf(Prefs.lastUse, Prefs.installTime)),
-                Modifier.padding(top = 2.dp), color = Dim, fontSize = 16.sp,
+                Modifier.padding(top = 2.dp).staggerIn(3), color = Dim, fontSize = 16.sp,
             )
             // Live count of what is held right now, not the digest history.
             val held = TriageListener.heldCount.intValue
@@ -384,10 +391,11 @@ fun LauncherRoot(resumeRev: Int) {
                 if (pinned.isEmpty()) {
                     Text("Swipe up for apps.\nLong-press an app there to pin it.", color = Dim, fontSize = 16.sp)
                 }
-                pinned.forEach { app ->
+                pinned.forEachIndexed { idx, app ->
                     val d = Prefs.delays[app.pkg] ?: 0
                     PressableText(
                         Apps.displayName(app, renames) + if (d > 0) " ·${d}s" else "",
+                        modifier = Modifier.staggerIn(4 + idx),
                         fontSize = 28.sp,
                         onClick = { go(app) },
                         onLong = { haptic.performHapticFeedback(HapticFeedbackType.LongPress); menuApp = app },
