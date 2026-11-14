@@ -109,12 +109,13 @@ object Apps {
 
     fun displayName(e: AppEntry, renames: Map<String, String>) = renames[e.pkg] ?: e.label
 
-    /** Apps the launcher may show right now: not hidden, and not blocked while blocking is active. */
+    /** Apps the launcher may show right now: not hidden, not blocked while blocking is active, not over a daily limit. */
     fun visible(all: List<AppEntry>): List<AppEntry> {
         val hidden = Prefs.hidden
         val blockNow = Blocking.isActive() && !Blocking.isPaused()
         val blocked = Prefs.blocked
-        return all.filter { it.pkg !in hidden && !(blockNow && it.pkg in blocked) }
+        // An app past its daily limit is blocked until midnight, so it also leaves home and search.
+        return all.filter { it.pkg !in hidden && !(blockNow && it.pkg in blocked) && !UsageTracker.overLimit(it.pkg) }
     }
 
     fun launch(ctx: Context, pkg: String): Boolean {

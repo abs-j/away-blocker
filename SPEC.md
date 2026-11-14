@@ -44,7 +44,7 @@
 
 ## 6. Screen time
 - Usage tab (Usage access permission): today's total, pickups, 7-day bars, per-app time today.
-- Tap an app to set a daily limit; reaching it blocks the app until midnight. Distracting-apps list sits behind a toggle on the same tab.
+- Tap an app to set a daily limit; reaching it blocks the app until midnight and removes it from home and search. Distracting-apps list sits behind a toggle on the same tab.
 
 ## 7. Digest quick actions
 - Each digest item has chips: do not hold that app for 30 min, 1 hour, 4 hours or always. Applies at once (held items for that app are released) and lists under "Not held" with a Hold again button.
