@@ -113,3 +113,18 @@ object Motivation {
         return options[((streakStart / 60_000L) % options.size).toInt()]
     }
 }
+
+/** The streak ring on the Focus tab: how far through the stretch between two milestones you are. */
+object Streak {
+    val marks = listOf(15L, 60L, 180L, 480L, 1440L, 4320L).map { it * 60_000L }
+
+    fun prev(away: Long): Long = marks.lastOrNull { it <= away } ?: 0L
+
+    fun next(away: Long): Long = marks.firstOrNull { it > away } ?: (marks.last() * 2)
+
+    fun progress(away: Long): Float {
+        val p = prev(away)
+        val n = next(away)
+        return ((away - p).toFloat() / (n - p)).coerceIn(0f, 1f)
+    }
+}

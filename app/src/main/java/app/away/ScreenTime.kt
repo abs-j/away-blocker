@@ -45,40 +45,19 @@ object UsageTracker {
         val usm = ctx.getSystemService(UsageStatsManager::class.java)
         val events = runCatching { usm.queryEvents(from, to) }.getOrNull() ?: return emptyMap()
         val skip = ignored(ctx)
-        val totals = HashMap<String, Long>()
-        // An app is in use while any of its activities is resumed. Track them per class: during a
-        // screen change the old activity's pause can arrive after the new one's resume, and a plain
-        // per-app flag would then lose the whole stretch (this dropped a 40 minute video).
-        val classes = HashMap<String, MutableSet<String>>()
-        val since = HashMap<String, Long>()
-        fun close(pkg: String, at: Long) {
-            classes.remove(pkg)
-            val s0 = since.remove(pkg) ?: return
-            if (at > s0) totals[pkg] = (totals[pkg] ?: 0L) + (at - s0)
-        }
+        val list = ArrayList<UsageMath.Ev>()
         val e = UsageEvents.Event()
         while (events.hasNextEvent()) {
             events.getNextEvent(e)
             val pkg = e.packageName ?: continue
-            if (pkg in skip) continue
-            val cls = e.className ?: ""
-            when (e.eventType) {
-                UsageEvents.Event.ACTIVITY_RESUMED -> {
-                    // Another app coming forward ends any app whose pause event was never delivered.
-                    since.keys.filter { it != pkg }.forEach { close(it, e.timeStamp) }
-                    classes.getOrPut(pkg) { HashSet() }.add(cls)
-                    since.putIfAbsent(pkg, e.timeStamp)
-                }
-                UsageEvents.Event.ACTIVITY_PAUSED -> {
-                    val set = classes[pkg] ?: continue
-                    set.remove(cls)
-                    if (set.isEmpty()) close(pkg, e.timeStamp)
-                }
+            val kind = when (e.eventType) {
+                UsageEvents.Event.ACTIVITY_RESUMED -> UsageMath.Kind.RESUME
+                UsageEvents.Event.ACTIVITY_PAUSED -> UsageMath.Kind.PAUSE
+                else -> continue
             }
+            list += UsageMath.Ev(pkg, e.className ?: "", kind, e.timeStamp)
         }
-        // Still in the foreground right now.
-        since.keys.toList().forEach { close(it, to) }
-        return totals
+        return UsageMath.total(list, skip, to)
     }
 
     fun today(ctx: Context, now: Long = System.currentTimeMillis()) = usage(ctx, dayStart(now), now)
@@ -136,4 +115,65 @@ object UsageTracker {
         val limit = Prefs.limits[pkg] ?: return false
         return (todayCached(now)[pkg] ?: 0L) >= limit * 60_000L
     }
+}
+
+/** The pure arithmetic behind the Usage tab, kept free of Android types so it can be unit tested. */
+object UsageMath {
+    enum class Kind { RESUME, PAUSE }
+
+    data class Ev(val pkg: String, val cls: String, val kind: Kind, val time: Long)
+
+    /**
+     * Foreground milliseconds per package from a time-ordered list of activity events, ending at [to].
+     * An app is in use while any of its activities is resumed. Activities are tracked per class: during a
+     * screen change the old activity's pause can arrive after the new one's resume, and a plain per-app flag
+     * would then lose the whole stretch (this once dropped a 40 minute video).
+     */
+    fun total(events: List<Ev>, skip: Set<String>, to: Long): Map<String, Long> {
+        val totals = HashMap<String, Long>()
+        val classes = HashMap<String, MutableSet<String>>()
+        val since = HashMap<String, Long>()
+        fun close(pkg: String, at: Long) {
+            classes.remove(pkg)
+            val s0 = since.remove(pkg) ?: return
+            if (at > s0) totals[pkg] = (totals[pkg] ?: 0L) + (at - s0)
+        }
+        for (e in events) {
+            if (e.pkg in skip) continue
+            when (e.kind) {
+                Kind.RESUME -> {
+                    // Another app coming forward ends any app whose pause event was never delivered.
+                    since.keys.filter { it != e.pkg }.forEach { close(it, e.time) }
+                    classes.getOrPut(e.pkg) { HashSet() }.add(e.cls)
+                    since.putIfAbsent(e.pkg, e.time)
+                }
+                Kind.PAUSE -> {
+                    val set = classes[e.pkg] ?: continue
+                    set.remove(e.cls)
+                    if (set.isEmpty()) close(e.pkg, e.time)
+                }
+            }
+        }
+        // Still in the foreground right now.
+        since.keys.toList().forEach { close(it, to) }
+        return totals
+    }
+}
+
+/** Which apps to offer adding to the distracting list: the ones used a lot today that are not already on it. */
+object Suggestions {
+    fun pick(
+        today: Map<String, Long>,
+        labels: Set<String>,
+        blocked: Set<String>,
+        neverBlock: Set<String>,
+        dismissed: Set<String>,
+        minMs: Long = 15 * 60_000L,
+        max: Int = 2,
+    ): List<Pair<String, Long>> =
+        today.entries
+            .filter { it.key in labels && it.key !in blocked && it.key !in neverBlock && it.key !in dismissed && it.value >= minMs }
+            .sortedByDescending { it.value }
+            .take(max)
+            .map { it.key to it.value }
 }

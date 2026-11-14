@@ -10,7 +10,10 @@ Away is an Android app that blocks the apps that pull you in, holds notification
 - **Quiet notifications.** During Focus, notifications wait in a digest and come back when Focus ends, even if your phone restarts. Urgent ones still come through: verification codes, people you mark as VIPs, calls to call back, emergencies, travel changes and security alerts.
 - **Optional AI triage.** Add your own Anthropic or OpenRouter key to judge everything the rules do not catch.
 - **A calm home screen.** Time since you last opened a distracting app, with a little encouragement, a few pinned apps as text, and instant search. Distracting apps disappear during Focus.
-- **Lock screen timer.** How long since you last used your phone.
+- **Lock screen timer.** How long since you last used your phone, shown only once it has sat untouched for a time you choose (default 1 hour).
+- **Unlock pause.** A calm 5 second pause after you unlock, showing your streak, so you can decide whether you really want to go in. Off, every unlock, Focus hours only, or only when you have a streak.
+- **Screen time.** Per-app time today, a 7-day chart, and daily limits that block an app until midnight. Phone, Messages, Maps and Settings are never limited. Away suggests adding apps you use a lot to your distracting list.
+- **Let a chat through.** From the digest, let one chat (or a whole app) through Focus for 30 minutes, an hour, four hours or always.
 - **Weekly stats.** Distracting-app opens per day, blocked attempts, your longest stretch away and how often you pick up your phone.
 
 ## Install
@@ -27,6 +30,7 @@ Because Away is installed from a download, Android hides its Accessibility switc
 |---|---|
 | Accessibility | See which app is in front, to block your chosen apps during Focus, count time away and lock the screen on double tap. It never reads your messages, typing or screen content. |
 | Notification access (optional) | Hold notifications during Focus and bring them back afterwards. |
+| Usage access (optional) | Read how long each app was on screen, for the Usage tab and daily limits. Stays on your phone. |
 | Notifications | The lock screen timer and urgent alerts. |
 | Battery unrestricted (optional) | Keeps blocking and timers running. |
 | Home app (optional) | Use Away's home screen. |

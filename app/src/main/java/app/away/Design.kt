@@ -6,6 +6,7 @@ import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.runtime.setValue
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
@@ -67,6 +68,28 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import kotlin.math.abs
 
+/** False while the app is in the background, so endless animations stop drawing frames. */
+val LocalAnimActive = compositionLocalOf { true }
+
+/**
+ * An endless back-and-forth value between [from] and [to]. It runs only while the app is on screen, so the
+ * drifting background, glowing ring and pulsing dot cost nothing when the phone is idle or Away is hidden.
+ */
+@Composable
+fun rememberLoop(from: Float, to: Float, ms: Int): androidx.compose.runtime.State<Float> {
+    val active = LocalAnimActive.current
+    val a = remember { Animatable(from) }
+    LaunchedEffect(active) {
+        if (active) {
+            while (true) {
+                a.animateTo(to, tween(ms, easing = LinearEasing))
+                a.animateTo(from, tween(ms, easing = LinearEasing))
+            }
+        }
+    }
+    return a.asState()
+}
+
 /** The Away palette: near-black with indigo, violet and mint light bleeding through glass panels. */
 object Glow {
     val Night = Color(0xFF07080D)
@@ -114,39 +137,47 @@ private val AwayType = Typography().run {
 fun AwayTheme(content: @Composable () -> Unit) {
     MaterialTheme(colorScheme = AwayColors, typography = AwayType) {
         // Without a Surface around it, text would fall back to black on our dark glass.
+        val owner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+        var resumed by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(true) }
+        androidx.compose.runtime.DisposableEffect(owner) {
+            val obs = androidx.lifecycle.LifecycleEventObserver { _, _ ->
+                resumed = owner.lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)
+            }
+            resumed = owner.lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)
+            owner.lifecycle.addObserver(obs)
+            onDispose { owner.lifecycle.removeObserver(obs) }
+        }
         androidx.compose.runtime.CompositionLocalProvider(
-            androidx.compose.material3.LocalContentColor provides Glow.Ink, content = content,
+            androidx.compose.material3.LocalContentColor provides Glow.Ink,
+            LocalAnimActive provides resumed,
+            content = content,
         )
     }
 }
 
-/** Slow drifting colour behind everything, so the glass panels above it have something to refract. */
+/**
+ * Slow drifting colour behind everything, so the glass panels above it have something to refract. The glows are
+ * painted once onto an oversized layer and only that layer is nudged around, which is far cheaper than
+ * re-drawing three full-screen gradients every frame.
+ */
 @Composable
 fun AmbientBackground(modifier: Modifier = Modifier) {
-    val t = rememberInfiniteTransition(label = "ambient")
-    val a by t.animateFloat(0f, 1f, infiniteRepeatable(tween(17000, easing = LinearEasing), RepeatMode.Reverse), label = "a")
-    val b by t.animateFloat(1f, 0f, infiniteRepeatable(tween(23000, easing = LinearEasing), RepeatMode.Reverse), label = "b")
-    Canvas(modifier.fillMaxSize()) {
-        drawRect(Glow.Night)
-        val r = size.width * 1.0f
-        drawRect(
-            Brush.radialGradient(
-                listOf(Glow.Indigo.copy(alpha = 0.30f), Color.Transparent),
-                center = Offset(size.width * (0.05f + 0.55f * a), size.height * (0.06f + 0.10f * b)), radius = r,
-            ),
-        )
-        drawRect(
-            Brush.radialGradient(
-                listOf(Glow.Violet.copy(alpha = 0.22f), Color.Transparent),
-                center = Offset(size.width * (0.95f - 0.5f * b), size.height * (0.55f + 0.12f * a)), radius = r,
-            ),
-        )
-        drawRect(
-            Brush.radialGradient(
-                listOf(Glow.Mint.copy(alpha = 0.10f), Color.Transparent),
-                center = Offset(size.width * (0.2f + 0.3f * a), size.height * 0.98f), radius = r * 0.8f,
-            ),
-        )
+    val a by rememberLoop(0f, 1f, 17000)
+    val b by rememberLoop(0f, 1f, 23000)
+    Box(modifier.fillMaxSize().background(Glow.Night)) {
+        Canvas(
+            Modifier.fillMaxSize().graphicsLayer {
+                // Drawn 1.5 times the screen so it can slide without showing an edge.
+                scaleX = 1.5f; scaleY = 1.5f
+                translationX = (a - 0.5f) * size.width * 0.22f
+                translationY = (b - 0.5f) * size.height * 0.10f
+            },
+        ) {
+            val r = size.width * 0.9f
+            drawRect(Brush.radialGradient(listOf(Glow.Indigo.copy(alpha = 0.30f), Color.Transparent), center = Offset(size.width * 0.25f, size.height * 0.12f), radius = r))
+            drawRect(Brush.radialGradient(listOf(Glow.Violet.copy(alpha = 0.22f), Color.Transparent), center = Offset(size.width * 0.85f, size.height * 0.58f), radius = r))
+            drawRect(Brush.radialGradient(listOf(Glow.Mint.copy(alpha = 0.10f), Color.Transparent), center = Offset(size.width * 0.35f, size.height * 0.95f), radius = r * 0.8f))
+        }
     }
 }
 
@@ -244,8 +275,7 @@ fun GlassNav(pager: PagerState, items: List<NavItem>, onSelect: (Int) -> Unit) {
 @Composable
 fun StreakRing(progress: Float, modifier: Modifier = Modifier, content: @Composable BoxScope.() -> Unit) {
     val p by animateFloatAsState(progress.coerceIn(0f, 1f), tween(1600, easing = FastOutSlowInEasing), label = "ring")
-    val t = rememberInfiniteTransition(label = "ringfx")
-    val pulse by t.animateFloat(0.55f, 1f, infiniteRepeatable(tween(2400, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "pulse")
+    val pulse by rememberLoop(0.55f, 1f, 2400)
     Box(modifier.aspectRatio(1f), contentAlignment = Alignment.Center) {
         Canvas(Modifier.fillMaxSize()) {
             val stroke = 12.dp.toPx()

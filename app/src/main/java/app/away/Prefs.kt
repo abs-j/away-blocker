@@ -156,6 +156,11 @@ object Prefs {
         get() = sp.getInt("indicatorAfterMin", 60)
         set(v) = sp.edit().putInt("indicatorAfterMin", v.coerceIn(0, 24 * 60)).apply()
 
+    /** Apps the user said no to when Away suggested adding them to the distracting list. */
+    var suggestDismissed: Set<String>
+        get() = getList("suggestDismissed").toSet()
+        set(v) = putList("suggestDismissed", v)
+
     /** Unlock pause: 0 off, 1 every unlock, 2 only during Focus hours, 3 only when the streak is an hour or more. */
     var unlockPause: Int
         get() = sp.getInt("unlockPause", 1)
@@ -176,8 +181,7 @@ object Prefs {
     const val PASS_ALWAYS = Long.MAX_VALUE
 
     /** Rule key for one conversation in an app; a blank title means the whole app. */
-    fun passKey(pkg: String, title: String? = null): String =
-        if (title.isNullOrBlank()) pkg else pkg + "|" + title.trim().lowercase()
+    fun passKey(pkg: String, title: String? = null): String = PassRules.key(pkg, title)
 
     /** Active rules, keyed as [passKey] builds them, with when each ends. */
     fun passRules(now: Long = System.currentTimeMillis()): Map<String, Long> =
@@ -185,8 +189,7 @@ object Prefs {
 
     /** True if the app as a whole, or this conversation, is currently let through. */
     fun isPassing(pkg: String, title: String? = null, now: Long = System.currentTimeMillis()): Boolean {
-        val m = passMap()
-        return (m[pkg] ?: 0L) > now || (m[passKey(pkg, title)] ?: 0L) > now
+        return PassRules.isPassing(passMap(), pkg, title, now)
     }
 
     @Synchronized
@@ -355,6 +358,17 @@ data class DigestItem(
     }
 }
 
+/** Pure rules for letting an app or one chat through Focus. */
+object PassRules {
+    /** Rule key for one conversation in an app; a blank title means the whole app. */
+    fun key(pkg: String, title: String? = null): String =
+        if (title.isNullOrBlank()) pkg else pkg + "|" + title.trim().lowercase()
+
+    /** True if the whole app, or this chat, has a rule that has not yet ended. */
+    fun isPassing(rules: Map<String, Long>, pkg: String, title: String?, now: Long): Boolean =
+        (rules[pkg] ?: 0L) > now || (rules[key(pkg, title)] ?: 0L) > now
+}
+
 object Blocking {
     /** True when Focus is on and inside its schedule (if any). */
     fun isFocusOn(now: Long = System.currentTimeMillis()): Boolean {
@@ -362,10 +376,12 @@ object Blocking {
         if (!Prefs.scheduleEnabled) return true
         val cal = java.util.Calendar.getInstance().apply { timeInMillis = now }
         val m = cal.get(java.util.Calendar.HOUR_OF_DAY) * 60 + cal.get(java.util.Calendar.MINUTE)
-        val s = Prefs.startMin
-        val e = Prefs.endMin
-        return if (s <= e) m in s until e else (m >= s || m < e)
+        return inWindow(m, Prefs.startMin, Prefs.endMin)
     }
+
+    /** Whether [minute] (of the day) falls in the schedule from [start] up to but not including [end]; end may wrap past midnight. */
+    fun inWindow(minute: Int, start: Int, end: Int): Boolean =
+        if (start <= end) minute in start until end else (minute >= start || minute < end)
 
     /** Focus is on and set to hide distracting apps. The unlock pause is checked separately. */
     fun isActive(now: Long = System.currentTimeMillis()) = isFocusOn(now) && Prefs.focusBlocksApps
