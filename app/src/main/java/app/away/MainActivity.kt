@@ -344,6 +344,7 @@ private fun clock(ms: Long) = SimpleDateFormat("HH:mm", Locale.getDefault()).for
 // Focus
 // ---------------------------------------------------------------------------------------------
 
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun HomeScreen(onRunSetup: () -> Unit = {}) {
     val ctx = LocalContext.current
@@ -470,6 +471,30 @@ fun HomeScreen(onRunSetup: () -> Unit = {}) {
                 }
                 TextButton(onClick = { after = (after - 15).coerceAtLeast(0); Prefs.indicatorAfterMin = after }) { Text("-15m") }
                 TextButton(onClick = { after = (after + 15).coerceAtMost(24 * 60); Prefs.indicatorAfterMin = after }) { Text("+15m") }
+            }
+        }
+
+        Panel {
+            var mode by remember { mutableIntStateOf(Prefs.unlockPause) }
+            Column(Modifier.padding(horizontal = 20.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Unlock pause", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    when (mode) {
+                        0 -> "Off"
+                        1 -> "A 5 second pause after every unlock, to think before you go in"
+                        2 -> "A 5 second pause after unlocking during Focus hours"
+                        else -> "A 5 second pause when you have gone an hour or more without a distracting app"
+                    },
+                    style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant,
+                )
+                androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("Off", "Every unlock", "Focus hours", "Streak 1h+").forEachIndexed { i, label ->
+                        FilterChip(
+                            selected = mode == i, onClick = { mode = i; Prefs.unlockPause = i },
+                            label = { Text(label, maxLines = 1, softWrap = false) },
+                        )
+                    }
+                }
             }
         }
 
@@ -762,11 +787,13 @@ fun DigestScreen() {
             item {
                 Panel {
                     Text("Not held", Modifier.padding(horizontal = 20.dp, vertical = 8.dp), style = MaterialTheme.typography.titleMedium)
-                    rules.forEach { (pkg, until) ->
+                    rules.forEach { (key, until) ->
+                        val pkg = key.substringBefore('|')
+                        val chat = key.substringAfter('|', "").replaceFirstChar { it.uppercase() }
                         SettingRow(
-                            appLabel(ctx, pkg),
+                            appLabel(ctx, pkg) + if (chat.isNotBlank()) " · $chat" else "",
                             if (until == Prefs.PASS_ALWAYS) "Always comes through" else "Comes through until ${clock(until)}",
-                        ) { TextButton(onClick = { Prefs.clearPass(pkg) }) { Text("Hold again") } }
+                        ) { TextButton(onClick = { Prefs.clearPass(key) }) { Text("Hold again") } }
                     }
                 }
             }
@@ -817,20 +844,31 @@ fun DigestScreen() {
                         if (d.text.isNotBlank()) Text(d.text, style = MaterialTheme.typography.bodyMedium, maxLines = 3, overflow = TextOverflow.Ellipsis)
                         if (d.reason.isNotBlank()) Text(d.reason, style = MaterialTheme.typography.bodySmall, color = cs.primary)
                         if (d.pkg.isNotBlank()) {
-                            val until = rules[d.pkg]
+                            val chatKey = Prefs.passKey(d.pkg, d.title)
+                            val until = rules[d.pkg] ?: rules[chatKey]
+                            val canScope = d.title.isNotBlank()
+                            var wholeApp by remember(d.pkg, d.title) { mutableStateOf(!canScope) }
+                            val target = if (canScope && !wholeApp) "“${d.title}”" else d.app
                             if (until != null) {
                                 Text(
-                                    if (until == Prefs.PASS_ALWAYS) "${d.app} is never held" else "${d.app} is not held until ${clock(until)}",
+                                    if (until == Prefs.PASS_ALWAYS) "$target is never held" else "$target is not held until ${clock(until)}",
                                     style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant,
                                 )
                             } else {
-                                Text("Don't hold ${d.app} for", style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant)
+                                if (canScope) {
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        FilterChip(selected = !wholeApp, onClick = { wholeApp = false }, label = { Text("This chat", maxLines = 1, softWrap = false) })
+                                        FilterChip(selected = wholeApp, onClick = { wholeApp = true }, label = { Text("All of ${d.app}", maxLines = 1, softWrap = false) })
+                                    }
+                                }
+                                Text("Don't hold $target for", style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     listOf("30 min" to 30, "1 hour" to 60, "4 hours" to 240, "Always" to -1).forEach { (label, mins) ->
                                         AssistChip(
                                             onClick = {
-                                                Prefs.setPass(d.pkg, if (mins < 0) Prefs.PASS_ALWAYS else System.currentTimeMillis() + mins * 60_000L)
-                                                TriageListener.releaseApp(d.pkg)
+                                                val key = if (wholeApp) d.pkg else chatKey
+                                                Prefs.setPass(key, if (mins < 0) Prefs.PASS_ALWAYS else System.currentTimeMillis() + mins * 60_000L)
+                                                TriageListener.releaseApp(d.pkg, if (wholeApp) null else d.title)
                                             },
                                             label = { Text(label, maxLines = 1, softWrap = false) },
                                         )
@@ -1187,8 +1225,7 @@ private fun UsageContent() {
     var limits by remember { mutableStateOf(Prefs.limits) }
     var editing by remember { mutableStateOf<String?>(null) }
     val labels = remember { Apps.loadAll(ctx).associate { it.pkg to it.label } }
-    val pickups = Stats.lastDays(1).last().pickups
-    Stats.version.intValue
+    val pickups = remember(Stats.version.intValue) { Stats.lastDays(1).last().pickups }
 
     LaunchedEffect(Unit) {
         while (true) {
@@ -1203,7 +1240,13 @@ private fun UsageContent() {
     }
 
     editing?.let { pkg ->
-        var mins by remember(pkg) { mutableIntStateOf(limits[pkg] ?: 30) }
+        val existing = limits[pkg]
+        var mins by remember(pkg) { mutableIntStateOf(existing ?: 30) }
+        // Loosening a limit (higher, or removing it) takes a 30 second wait, like unlocking apps in Focus.
+        var wait by remember(pkg) { mutableIntStateOf(if (existing != null) 30 else 0) }
+        LaunchedEffect(pkg, wait) { if (wait > 0) { delay(1000); wait -= 1 } }
+        val loosening = existing != null && mins > existing
+        val locked = wait > 0 && loosening
         AlertDialog(
             onDismissRequest = { editing = null },
             title = { Text("Daily limit for ${labels[pkg] ?: pkg}") },
@@ -1218,15 +1261,20 @@ private fun UsageContent() {
                     Row {
                         TextButton(onClick = { mins = (mins - 5).coerceAtLeast(5) }) { Text("-5m") }
                         TextButton(onClick = { mins = (mins + 5).coerceAtMost(12 * 60) }) { Text("+5m") }
-                        if (pkg in limits) TextButton(onClick = {
+                        if (pkg in limits) TextButton(enabled = wait == 0, onClick = {
                             limits = limits - pkg; Prefs.limits = limits; editing = null
-                        }) { Text("Remove limit") }
+                        }) { Text(if (wait > 0) "Remove in ${wait}s" else "Remove limit") }
                     }
-                    Text("The app is blocked for the rest of the day once you reach it.", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+                    Text(
+                        if (existing != null) "Lowering a limit is instant. Raising or removing it takes 30 seconds."
+                        else "The app is blocked for the rest of the day once you reach it.",
+                        style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
                 }
             },
             confirmButton = {
-                TextButton(onClick = { limits = limits + (pkg to mins); Prefs.limits = limits; editing = null }) { Text("Set") }
+                TextButton(enabled = !locked, onClick = { limits = limits + (pkg to mins); Prefs.limits = limits; editing = null }) {
+                    Text(if (locked) "Set in ${wait}s" else "Set")
+                }
             },
             dismissButton = { TextButton(onClick = { editing = null }) { Text("Cancel") } },
         )
@@ -1234,7 +1282,7 @@ private fun UsageContent() {
 
     val rows = today.filterKeys { it in labels }.entries.sortedByDescending { it.value }.take(25)
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PagePad, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { PageHeader("Screen time", "Today, per app. Tap an app to set a daily limit.") }
+        item { PageHeader("Screen time", "Today, per app. Tap an app to set a daily limit. Phone, Messages, Maps and Settings are never limited.") }
         if (!access) {
             item {
                 Panel {
@@ -1301,7 +1349,7 @@ private fun UsageContent() {
                 Panel {
                     rows.forEachIndexed { i, (pkg, ms) ->
                         val limit = limits[pkg]
-                        Column(Modifier.fillMaxWidth().clickable { editing = pkg }.padding(horizontal = 20.dp, vertical = 10.dp)) {
+                        Column(Modifier.fillMaxWidth().clickable(enabled = !UsageTracker.isNeverBlock(pkg)) { editing = pkg }.padding(horizontal = 20.dp, vertical = 10.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(labels[pkg] ?: pkg, Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 Text(

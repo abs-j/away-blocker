@@ -43,11 +43,17 @@
 - Existing installs migrate once: old Blocking and Hold settings map onto Focus and its two checkboxes.
 
 ## 6. Screen time
+- Phone, Messages, Maps, Settings, Contacts and the Play Store are never limited or blocked. Raising or removing a limit takes a 30 second wait; lowering is instant.
+- Held notifications are re-posted as the app's own notification (reply buttons, conversation style) in a quiet channel; after a process restart only the text survives.
 - Usage tab (Usage access permission): today's total, pickups, 7-day bars, per-app time today.
 - Tap an app to set a daily limit; reaching it blocks the app until midnight and removes it from home and search. Distracting-apps list sits behind a toggle on the same tab.
 
 ## 7. Digest quick actions
-- Each digest item has chips: do not hold that app for 30 min, 1 hour, 4 hours or always. Applies at once (held items for that app are released) and lists under "Not held" with a Hold again button.
+- Each digest item has chips: do not hold that chat (or the whole app) for 30 min, 1 hour, 4 hours or always. A chat is matched by app plus notification title. Applies at once (held items for that app are released) and lists under "Not held" with a Hold again button.
+
+## 8. Unlock pause
+- After unlocking, a full-screen overlay counts 5 to 0 showing the time since a distracting app and a short prompt. Continue appears at 0; Lock phone is always available.
+- Setting: off, every unlock, Focus hours only, or only when the streak is at least an hour. No skips. Not shown during calls.
 
 ## Screens
 Home (counter, on/off), Blocked apps + schedule, Digest, Permissions setup.

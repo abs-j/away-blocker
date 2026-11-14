@@ -141,6 +141,7 @@ object Prefs {
         get() = sp.getLong("unlockUntil", 0L)
         set(v) = sp.edit().putLong("unlockUntil", v).apply()
 
+    /** Last time a distracting app was in use. The home timer is plain time since this, asleep or awake. */
     var lastUse: Long
         get() = sp.getLong("lastUse", 0L)
         set(v) = sp.edit().putLong("lastUse", v).apply()
@@ -155,33 +156,48 @@ object Prefs {
         get() = sp.getInt("indicatorAfterMin", 60)
         set(v) = sp.edit().putInt("indicatorAfterMin", v.coerceIn(0, 24 * 60)).apply()
 
+    /** Unlock pause: 0 off, 1 every unlock, 2 only during Focus hours, 3 only when the streak is an hour or more. */
+    var unlockPause: Int
+        get() = sp.getInt("unlockPause", 1)
+        set(v) = sp.edit().putInt("unlockPause", v.coerceIn(0, 3)).apply()
+
     /** Package to daily limit in minutes. Reaching it blocks the app until midnight. */
     var limits: Map<String, Int>
         get() = getMap("limits").mapValues { it.value.toIntOrNull() ?: 0 }.filterValues { it > 0 }
         set(v) = putMap("limits", v.mapValues { it.value.toString() })
 
-    /** Package to the time (ms) until which its notifications are not held. [PASS_ALWAYS] means no end. */
+    /**
+     * Key to the time (ms) until which matching notifications are not held. A key is a package
+     * alone (the whole app) or a package plus conversation title (one chat). [PASS_ALWAYS] means no end.
+     */
     private fun passMap(): Map<String, Long> =
         getMap("passRules").mapValues { it.value.toLongOrNull() ?: 0L }
 
     const val PASS_ALWAYS = Long.MAX_VALUE
 
-    /** Apps whose notifications currently go straight through Focus, with when that ends. */
+    /** Rule key for one conversation in an app; a blank title means the whole app. */
+    fun passKey(pkg: String, title: String? = null): String =
+        if (title.isNullOrBlank()) pkg else pkg + "|" + title.trim().lowercase()
+
+    /** Active rules, keyed as [passKey] builds them, with when each ends. */
     fun passRules(now: Long = System.currentTimeMillis()): Map<String, Long> =
         passMap().filterValues { it > now }
 
-    fun isPassing(pkg: String, now: Long = System.currentTimeMillis()): Boolean =
-        (passMap()[pkg] ?: 0L) > now
+    /** True if the app as a whole, or this conversation, is currently let through. */
+    fun isPassing(pkg: String, title: String? = null, now: Long = System.currentTimeMillis()): Boolean {
+        val m = passMap()
+        return (m[pkg] ?: 0L) > now || (m[passKey(pkg, title)] ?: 0L) > now
+    }
 
     @Synchronized
-    fun setPass(pkg: String, until: Long) {
-        putMap("passRules", (passRules() + (pkg to until)).mapValues { it.value.toString() })
+    fun setPass(key: String, until: Long) {
+        putMap("passRules", (passRules() + (key to until)).mapValues { it.value.toString() })
         digestVersion.intValue++
     }
 
     @Synchronized
-    fun clearPass(pkg: String) {
-        putMap("passRules", (passRules() - pkg).mapValues { it.value.toString() })
+    fun clearPass(key: String) {
+        putMap("passRules", (passRules() - key).mapValues { it.value.toString() })
         digestVersion.intValue++
     }
 
@@ -360,7 +376,8 @@ object Blocking {
     fun isPaused(now: Long = System.currentTimeMillis()) = now < Prefs.unlockUntil
 
     fun shouldBlock(pkg: String?, now: Long = System.currentTimeMillis()): Boolean =
-        pkg != null && ((pkg in Prefs.blocked && isActive(now) && !isPaused(now)) || UsageTracker.overLimit(pkg, now))
+        pkg != null && !UsageTracker.isNeverBlock(pkg) &&
+            ((pkg in Prefs.blocked && isActive(now) && !isPaused(now)) || UsageTracker.overLimit(pkg, now))
 
     fun formatDuration(ms: Long): String {
         val h = ms / 3_600_000

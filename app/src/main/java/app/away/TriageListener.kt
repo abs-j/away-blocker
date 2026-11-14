@@ -28,6 +28,8 @@ class TriageListener : NotificationListenerService() {
     private class Held(
         val key: String, val pkg: String, val app: String, val title: String, val text: String,
         val time: Long, val icon: Icon?, val contentIntent: PendingIntent?,
+        /** The notification as the app posted it, kept in memory so reply buttons and style survive. */
+        val orig: Notification? = null,
     )
 
     private val held = LinkedHashMap<String, Held>()
@@ -96,15 +98,37 @@ class TriageListener : NotificationListenerService() {
         }
     }
 
-    private fun restoreHeld(onlyPkg: String? = null) {
+    private fun restoreHeld(onlyPkg: String? = null, onlyTitle: String? = null) {
         val items = synchronized(held) {
-            val out = held.values.filter { onlyPkg == null || it.pkg == onlyPkg }
+            val out = held.values.filter {
+                onlyPkg == null || (it.pkg == onlyPkg &&
+                    (onlyTitle.isNullOrBlank() || it.title.trim().equals(onlyTitle.trim(), ignoreCase = true)))
+            }
             out.forEach { held.remove(it.key) }
             out
         }
         persist()
         val nm = getSystemService(NotificationManager::class.java)
         items.forEach { h ->
+            // Best case: rebuild the app's own notification (buttons, reply, conversation style) in our
+            // quiet channel. After a restart only the text survives, so fall back to a plain copy.
+            val original = h.orig?.let { o ->
+                runCatching {
+                    Notification.Builder.recoverBuilder(this, o)
+                        .setChannelId(AwayApp.CH_RESTORED)
+                        .setGroup("held_${h.key}")
+                        .setGroupSummary(false)
+                        .setOngoing(false)
+                        .setAutoCancel(true)
+                        .setWhen(h.time)
+                        .setShowWhen(true)
+                        .build()
+                }.getOrNull()
+            }
+            if (original != null) {
+                nm.notify("held", h.key.hashCode(), original)
+                return@forEach
+            }
             val b = Notification.Builder(this, AwayApp.CH_RESTORED)
                 .setSmallIcon(h.icon ?: Icon.createWithResource(this, R.drawable.ic_stat_away))
                 .setContentTitle(h.title.ifBlank { h.app })
@@ -181,8 +205,8 @@ class TriageListener : NotificationListenerService() {
     private fun process(sbn: StatusBarNotification, fresh: Boolean): Boolean {
         val n = sbn.notification ?: return false
         if (sbn.packageName == packageName || sbn.packageName in ignoredPackages) return false
-        // The user chose to let this app through (from the digest): leave it untouched.
-        if (Prefs.isPassing(sbn.packageName)) return false
+        // The user chose to let this app, or this chat, through (from the digest): leave it untouched.
+        if (Prefs.isPassing(sbn.packageName, sbn.notification?.extras?.getCharSequence(Notification.EXTRA_TITLE)?.toString())) return false
         if (sbn.isOngoing || (n.flags and Notification.FLAG_FOREGROUND_SERVICE) != 0) return false
         if (n.category in passThroughCategories) return false
         // Group summaries duplicate their children; just remove them.
@@ -201,7 +225,7 @@ class TriageListener : NotificationListenerService() {
         }.getOrDefault(pkg)
 
         synchronized(held) {
-            held[sbn.key] = Held(sbn.key, pkg, app, title, text, sbn.postTime, n.smallIcon, n.contentIntent)
+            held[sbn.key] = Held(sbn.key, pkg, app, title, text, sbn.postTime, n.smallIcon, n.contentIntent, n)
         }
         persist()
         // Messaging apps re-post the same key with unchanged text; only classify once.
@@ -282,7 +306,9 @@ class TriageListener : NotificationListenerService() {
         /** Puts every held notification back now. The hold stays on for new ones. */
         fun releaseNow() { instance?.let { l -> l.handler.post { l.restoreHeld() } } }
 
-        /** Puts back what is held for one app, used when that app is set to not be held. */
-        fun releaseApp(pkg: String) { instance?.let { l -> l.handler.post { l.restoreHeld(pkg) } } }
+        /** Puts back what is held for one app, or one conversation of it, when a not-held rule is set. */
+        fun releaseApp(pkg: String, title: String? = null) {
+            instance?.let { l -> l.handler.post { l.restoreHeld(pkg, title) } }
+        }
     }
 }

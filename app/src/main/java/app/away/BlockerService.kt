@@ -28,7 +28,10 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
+import android.widget.Button
+import android.widget.LinearLayout
 import android.widget.TextView
+import android.media.AudioManager
 
 /**
  * Detects blocked apps opening, covers the screen, sends the user Home and kills the app's
@@ -142,6 +145,7 @@ class BlockerService : AccessibilityService() {
         if (instance === this) instance = null
         runCatching { unregisterReceiver(screenReceiver) }
         handler.removeCallbacksAndMessages(null)
+        hidePause()
         shield?.let { runCatching { wm.removeView(it) } }
         shield = null
         super.onDestroy()
@@ -314,7 +318,26 @@ class BlockerService : AccessibilityService() {
     private var synced = false
 
     private val screenReceiver = object : BroadcastReceiver() {
-        override fun onReceive(c: Context, i: Intent) = syncPhoneState()
+        override fun onReceive(c: Context, i: Intent) {
+            syncPhoneState()
+            // Face and fingerprint unlock may send no broadcast; watch closely while the lock screen is up.
+            if (i.action == Intent.ACTION_SCREEN_ON && !unlocked) startUnlockWatch()
+        }
+    }
+
+    private val unlockWatch = object : Runnable {
+        var until = 0L
+        override fun run() {
+            syncPhoneState()
+            val interactive = getSystemService(PowerManager::class.java).isInteractive
+            if (!unlocked && interactive && System.currentTimeMillis() < until) handler.postDelayed(this, 250)
+        }
+    }
+
+    private fun startUnlockWatch() {
+        handler.removeCallbacks(unlockWatch)
+        unlockWatch.until = System.currentTimeMillis() + 60_000
+        handler.post(unlockWatch)
     }
 
     private fun registerScreenReceiver() {
@@ -341,13 +364,109 @@ class BlockerService : AccessibilityService() {
         if (unlocked && !inUse) {
             Prefs.lastPhoneUse = System.currentTimeMillis()
             unlocked = false
+            hidePause()
         } else if (!unlocked && inUse) {
             unlocked = true
             val now = System.currentTimeMillis()
-            if (synced) Stats.recordPickup(now, now - (Prefs.lastPhoneUse.takeIf { it > 0 } ?: Prefs.installTime))
+            if (synced) {
+                Stats.recordPickup(now, now - (Prefs.lastPhoneUse.takeIf { it > 0 } ?: Prefs.installTime))
+                maybeShowUnlockPause(now)
+            }
         }
         synced = true
         postIndicatorNotification()
+    }
+
+    // --- Unlock pause: a short full-screen count after unlocking, to think before using the phone. ---
+
+    private var pauseView: View? = null
+    private var pauseLeft = 0
+    private val pauseTick = object : Runnable {
+        override fun run() {
+            val v = pauseView ?: return
+            if (inCall()) { hidePause(); return }
+            if (pauseLeft > 0) {
+                pauseLeft -= 1
+                v.findViewWithTag<TextView>("count")?.text = pauseLeft.toString()
+            }
+            if (pauseLeft == 0) v.findViewWithTag<View>("go")?.visibility = View.VISIBLE
+            handler.postDelayed(this, 1000)
+        }
+    }
+    private val pauseFailsafe = Runnable { hidePause() }
+
+    private fun inCall(): Boolean {
+        val mode = getSystemService(AudioManager::class.java).mode
+        return mode == AudioManager.MODE_RINGTONE || mode == AudioManager.MODE_IN_CALL ||
+            mode == AudioManager.MODE_IN_COMMUNICATION
+    }
+
+    private fun maybeShowUnlockPause(now: Long) {
+        if (pauseView != null || inCall()) return
+        val show = when (Prefs.unlockPause) {
+            1 -> true
+            2 -> Blocking.isFocusOn(now)
+            3 -> Blocking.awayMillis(now) >= 60 * 60_000L
+            else -> false
+        }
+        if (show) showPause(now)
+    }
+
+    private fun showPause(now: Long) {
+        if (!::wm.isInitialized) return
+        val prompts = listOf(
+            "Do you really need your phone right now?",
+            "What were you about to do?",
+            "Your streak is worth more than a scroll.",
+            "Take a breath. Still want to go in?",
+        )
+        fun label(t: String, sp: Float, c: Int) = TextView(this).apply {
+            text = t; textSize = sp; setTextColor(c); gravity = Gravity.CENTER
+        }
+        fun btn(t: String, tag: String, fill: Int, ink: Int) = Button(this).apply {
+            text = t; this.tag = tag; isAllCaps = false; setTextColor(ink)
+            background = GradientDrawable().apply { setColor(fill); cornerRadius = 100f }
+            setPadding(64, 24, 64, 24)
+        }
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setBackgroundColor(Color.BLACK)
+            setPadding(64, 64, 64, 64)
+        }
+        root.addView(label("${Blocking.formatDuration(Blocking.awayMillis(now))} since a distracting app", 18f, Color.LTGRAY))
+        root.addView(label("5", 120f, Color.WHITE).apply { tag = "count" })
+        root.addView(label(prompts.random(), 20f, Color.WHITE).apply { setPadding(0, 0, 0, 64) })
+        root.addView(btn("Lock phone", "lock", 0xFF3A4A8A.toInt(), Color.WHITE).apply {
+            setOnClickListener { hidePause(); performGlobalAction(GLOBAL_ACTION_LOCK_SCREEN) }
+        })
+        root.addView(btn("Continue", "go", 0xFF2B2B2B.toInt(), Color.LTGRAY).apply {
+            visibility = View.INVISIBLE
+            setOnClickListener { hidePause() }
+        }, LinearLayout.LayoutParams(-2, -2).apply { topMargin = 32 })
+        val p = overlayParams(
+            WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+        ).apply {
+            format = PixelFormat.OPAQUE
+            layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+        }
+        if (runCatching { wm.addView(root, p) }.isFailure) return
+        pauseView = root
+        pauseLeft = 5
+        handler.removeCallbacks(pauseTick)
+        handler.postDelayed(pauseTick, 1000)
+        // Never trap the phone: the overlay removes itself after two minutes whatever happens.
+        handler.removeCallbacks(pauseFailsafe)
+        handler.postDelayed(pauseFailsafe, 120_000)
+    }
+
+    private fun hidePause() {
+        handler.removeCallbacks(pauseTick)
+        handler.removeCallbacks(pauseFailsafe)
+        pauseView?.let { runCatching { wm.removeView(it) } }
+        pauseView = null
     }
 
     /**
