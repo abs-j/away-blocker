@@ -29,7 +29,10 @@ import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.graphics.Typeface
-import android.view.animation.OvershootInterpolator
+import android.animation.ValueAnimator
+import android.view.animation.AccelerateDecelerateInterpolator
+import android.view.animation.DecelerateInterpolator
+import android.widget.FrameLayout
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -401,7 +404,7 @@ class BlockerService : AccessibilityService() {
                     if (go.visibility != View.VISIBLE) {
                         go.alpha = 0f
                         go.visibility = View.VISIBLE
-                        go.animate().alpha(1f).setDuration(350).start()
+                        go.animate().alpha(1f).setDuration(900).start()
                     }
                 }
             }
@@ -410,12 +413,17 @@ class BlockerService : AccessibilityService() {
     }
     private val pauseFailsafe = Runnable { hidePause() }
 
-    /** The digit swells then settles with a small overshoot, so each second lands with weight. */
+    /** The old digit melts away and the next one drifts in, slowly and without any bounce. */
     private fun popDigit(tv: TextView, text: String) {
-        tv.text = text
-        tv.scaleX = 1.45f; tv.scaleY = 1.45f; tv.alpha = 0.4f
-        tv.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(520).setInterpolator(OvershootInterpolator(2f)).start()
+        if (tv.text.isNullOrEmpty()) { tv.text = text; tv.alpha = 0f; tv.animate().alpha(1f).setDuration(900).start(); return }
+        tv.animate().alpha(0f).setDuration(260).withEndAction {
+            tv.text = text
+            tv.scaleX = 0.94f; tv.scaleY = 0.94f
+            tv.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(760).setInterpolator(DecelerateInterpolator()).start()
+        }.start()
     }
+
+    private var pauseBreath: ValueAnimator? = null
 
     private fun inCall(): Boolean {
         val mode = getSystemService(AudioManager::class.java).mode
@@ -437,42 +445,75 @@ class BlockerService : AccessibilityService() {
     private fun showPause(now: Long) {
         if (!::wm.isInitialized) return
         val prompts = listOf(
-            "Do you really need your phone right now?",
-            "What were you about to do?",
-            "Your streak is worth more than a scroll.",
-            "Take a breath. Still want to go in?",
+            "Take a breath.",
+            "What are you here for?",
+            "No rush. Still want to go in?",
+            "Your day is yours.",
         )
+        val ink = 0xFFE9EEF5.toInt()
+        val soft = 0xFF9FB3C8.toInt()
         fun label(t: String, sp: Float, c: Int) = TextView(this).apply {
             text = t; textSize = sp; setTextColor(c); gravity = Gravity.CENTER
-        }
-        fun btn(t: String, tag: String, fill: Int, ink: Int) = Button(this).apply {
-            text = t; this.tag = tag; isAllCaps = false; setTextColor(ink)
-            background = GradientDrawable().apply { setColor(fill); cornerRadius = 100f }
-            setPadding(64, 24, 64, 24)
+            typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
         }
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
+            // A calm, deep teal-navy rather than a hard black.
             background = GradientDrawable(
                 GradientDrawable.Orientation.TOP_BOTTOM,
-                intArrayOf(0xFF05060B.toInt(), 0xFF171A45.toInt(), 0xFF05060B.toInt()),
+                intArrayOf(0xFF0A0F1C.toInt(), 0xFF112A3A.toInt(), 0xFF0A0F1C.toInt()),
             )
             setPadding(64, 64, 64, 64)
             alpha = 0f
         }
-        root.addView(label("${Blocking.formatDuration(Blocking.awayMillis(now))} since a distracting app", 18f, Color.LTGRAY))
-        root.addView(label("5", 132f, Color.WHITE).apply {
+        root.addView(label("${Blocking.formatDuration(Blocking.awayMillis(now))} since a distracting app", 15f, soft))
+        // The digit sits on a slow breathing glow.
+        val glow = View(this).apply {
+            background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(0x00000000, 0x00000000)).apply {
+                gradientType = GradientDrawable.RADIAL_GRADIENT
+                gradientRadius = 300f
+                colors = intArrayOf(0x4D4FA3C7, 0x00000000)
+                shape = GradientDrawable.OVAL
+            }
+        }
+        val digit = label("", 96f, ink).apply {
             tag = "count"
             typeface = Typeface.create("sans-serif-thin", Typeface.NORMAL)
-        })
-        root.addView(label(prompts.random(), 20f, Color.WHITE).apply { setPadding(0, 0, 0, 64) })
-        root.addView(btn("Lock phone", "lock", 0xFF4A5BD8.toInt(), Color.WHITE).apply {
+        }
+        val box = FrameLayout(this).apply {
+            addView(glow, FrameLayout.LayoutParams(600, 600, Gravity.CENTER))
+            addView(digit, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
+        }
+        root.addView(box, LinearLayout.LayoutParams(600, 600))
+        root.addView(label(prompts.random(), 18f, 0xFFD5DEE9.toInt()).apply { setPadding(0, 8, 0, 72) })
+        root.addView(Button(this).apply {
+            text = "Lock phone"; isAllCaps = false; setTextColor(ink)
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            background = GradientDrawable().apply {
+                setColor(0x26FFFFFF); cornerRadius = 100f; setStroke(2, 0x40FFFFFF)
+            }
+            setPadding(72, 26, 72, 26)
             setOnClickListener { hidePause(); performGlobalAction(GLOBAL_ACTION_LOCK_SCREEN) }
         })
-        root.addView(btn("Continue", "go", 0xFF2B2B2B.toInt(), Color.LTGRAY).apply {
+        root.addView(Button(this).apply {
+            text = "Continue"; tag = "go"; isAllCaps = false; setTextColor(soft)
+            background = null
             visibility = View.INVISIBLE
             setOnClickListener { hidePause() }
-        }, LinearLayout.LayoutParams(-2, -2).apply { topMargin = 32 })
+        }, LinearLayout.LayoutParams(-2, -2).apply { topMargin = 24 })
+        pauseBreath?.cancel()
+        pauseBreath = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 3600
+            repeatCount = ValueAnimator.INFINITE
+            repeatMode = ValueAnimator.REVERSE
+            interpolator = AccelerateDecelerateInterpolator()
+            addUpdateListener {
+                val t = it.animatedValue as Float
+                glow.scaleX = 0.86f + 0.24f * t; glow.scaleY = glow.scaleX; glow.alpha = 0.55f + 0.45f * t
+            }
+            start()
+        }
         val p = overlayParams(
             WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
@@ -484,7 +525,7 @@ class BlockerService : AccessibilityService() {
         if (runCatching { wm.addView(root, p) }.isFailure) return
         pauseView = root
         pauseLeft = 5
-        root.animate().alpha(1f).setDuration(320).start()
+        root.animate().alpha(1f).setDuration(700).start()
         root.findViewWithTag<TextView>("count")?.let { popDigit(it, "5") }
         handler.removeCallbacks(pauseTick)
         handler.postDelayed(pauseTick, 1000)
@@ -496,9 +537,10 @@ class BlockerService : AccessibilityService() {
     private fun hidePause() {
         handler.removeCallbacks(pauseTick)
         handler.removeCallbacks(pauseFailsafe)
+        pauseBreath?.cancel(); pauseBreath = null
         pauseView?.let { v ->
             // Fade out rather than vanish; the window is removed once the fade ends.
-            v.animate().alpha(0f).setDuration(180).withEndAction { runCatching { wm.removeView(v) } }.start()
+            v.animate().alpha(0f).setDuration(320).withEndAction { runCatching { wm.removeView(v) } }.start()
         }
         pauseView = null
     }

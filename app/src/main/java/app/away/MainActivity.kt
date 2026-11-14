@@ -1,7 +1,6 @@
 package app.away
 
 import android.Manifest
-import android.app.TimePickerDialog
 import android.app.role.RoleManager
 import android.content.ComponentName
 import android.content.Context
@@ -34,6 +33,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -265,6 +265,17 @@ private fun ToggleRow(title: String, subtitle: String?, checked: Boolean, enable
 }
 
 @Composable
+private fun awayChipColors() = androidx.compose.material3.FilterChipDefaults.filterChipColors(
+    containerColor = Color.Transparent, labelColor = Glow.InkDim,
+    selectedContainerColor = Glow.Indigo.copy(alpha = 0.40f), selectedLabelColor = Color.White,
+)
+
+@Composable
+private fun chipBorder(selected: Boolean) = androidx.compose.material3.FilterChipDefaults.filterChipBorder(
+    enabled = true, selected = selected, borderColor = Color.White.copy(alpha = 0.22f), selectedBorderColor = Glow.Indigo,
+)
+
+@Composable
 private fun awaySwitchColors() = androidx.compose.material3.SwitchDefaults.colors(
     checkedTrackColor = Glow.Indigo, checkedThumbColor = Color.White, checkedBorderColor = Color.Transparent,
     uncheckedTrackColor = Color.White.copy(alpha = 0.08f), uncheckedThumbColor = Glow.InkDim,
@@ -353,6 +364,8 @@ fun HomeScreen(onRunSetup: () -> Unit = {}) {
     var blocksApps by remember { mutableStateOf(Prefs.focusBlocksApps) }
     var holdsNotifs by remember { mutableStateOf(Prefs.focusHoldsNotifs) }
     var countdown by remember { mutableIntStateOf(0) }
+    // Which schedule time is being edited: 0 none, 1 start, 2 end.
+    var picking by remember { mutableIntStateOf(0) }
     var a11y by remember { mutableStateOf(a11yEnabled(ctx)) }
     var a11yRunning by remember { mutableStateOf(BlockerService.instance != null) }
     var listener by remember { mutableStateOf(listenerEnabled(ctx)) }
@@ -374,6 +387,17 @@ fun HomeScreen(onRunSetup: () -> Unit = {}) {
         }
     }
 
+    if (picking != 0) {
+        TimeDialog(
+            title = if (picking == 1) "Focus starts at" else "Focus ends at",
+            minutes = if (picking == 1) start else end,
+            onPick = { m ->
+                if (picking == 1) { start = m; Prefs.startMin = m } else { end = m; Prefs.endMin = m }
+                TriageListener.syncNow(); picking = 0
+            },
+            onDismiss = { picking = 0 },
+        )
+    }
     val focusOn = Blocking.isFocusOn(now)
     val paused = Blocking.isPaused(now)
     val status = when {
@@ -471,12 +495,8 @@ fun HomeScreen(onRunSetup: () -> Unit = {}) {
             }
             AnimatedVisibility(sched, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
                 Row(Modifier.padding(start = 20.dp, end = 20.dp, bottom = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilledTonalButton(onClick = {
-                        TimePickerDialog(ctx, { _, h, m -> start = h * 60 + m; Prefs.startMin = start; TriageListener.syncNow() }, start / 60, start % 60, true).show()
-                    }) { Text("From ${fmtTime(start)}") }
-                    FilledTonalButton(onClick = {
-                        TimePickerDialog(ctx, { _, h, m -> end = h * 60 + m; Prefs.endMin = end; TriageListener.syncNow() }, end / 60, end % 60, true).show()
-                    }) { Text("To ${fmtTime(end)}") }
+                    FilledTonalButton(onClick = { picking = 1 }) { Text("From ${fmtTime(start)}") }
+                    FilledTonalButton(onClick = { picking = 2 }) { Text("To ${fmtTime(end)}") }
                 }
             }
         }
@@ -513,6 +533,7 @@ fun HomeScreen(onRunSetup: () -> Unit = {}) {
                     listOf("Off", "Every unlock", "Focus hours", "Streak 1h+").forEachIndexed { i, label ->
                         FilterChip(
                             selected = mode == i, onClick = { mode = i; Prefs.unlockPause = i },
+                            colors = awayChipColors(), border = chipBorder(mode == i),
                             label = { Text(label, maxLines = 1, softWrap = false) },
                         )
                     }
@@ -532,7 +553,7 @@ fun HomeScreen(onRunSetup: () -> Unit = {}) {
                         style = MaterialTheme.typography.bodyMedium, color = cs.onSurfaceVariant,
                     )
                     if (countdown > 0) {
-                        LinearProgressIndicator(progress = { 1f - countdown / 30f }, modifier = Modifier.fillMaxWidth())
+                        GlowBar(1f - countdown / 30f, Glow.Indigo)
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text("Unlocking in ${countdown}s", Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
                             TextButton(onClick = { countdown = 0 }) { Text("Cancel") }
@@ -659,10 +680,23 @@ private fun WeekStats(now: Long) {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun TimeDialog(title: String, minutes: Int, onPick: (Int) -> Unit, onDismiss: () -> Unit) {
+    val state = androidx.compose.material3.rememberTimePickerState(minutes / 60, minutes % 60, is24Hour = true)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = { Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { androidx.compose.material3.TimePicker(state) } },
+        confirmButton = { TextButton(onClick = { onPick(state.hour * 60 + state.minute) }) { Text("Set") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
 @Composable
 private fun StatCell(label: String, value: String, modifier: Modifier = Modifier) {
     Column(modifier.padding(12.dp)) {
-        Text(value, style = MaterialTheme.typography.titleLarge)
+        Text(value, style = MaterialTheme.typography.titleLarge.copy(fontSize = 20.sp), maxLines = 1, softWrap = false)
         Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
@@ -683,15 +717,13 @@ private fun AboutDialog(onDismiss: () -> Unit, onRunSetup: () -> Unit) {
                         "and then only to that provider, with numbers, emails and links removed.",
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(onClick = { safeStart(ctx, Intent(Intent.ACTION_VIEW, android.net.Uri.parse(PROJECT_URL))) }) { Text("Website") }
+                    TextButton(onClick = onRunSetup) { Text("Run setup again") }
+                }
             }
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
-        dismissButton = {
-            Row {
-                TextButton(onClick = { safeStart(ctx, Intent(Intent.ACTION_VIEW, android.net.Uri.parse(PROJECT_URL))) }) { Text("Website") }
-                TextButton(onClick = onRunSetup) { Text("Run setup again") }
-            }
-        },
     )
 }
 
@@ -883,8 +915,8 @@ fun DigestScreen() {
                             } else {
                                 if (canScope) {
                                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        FilterChip(selected = !wholeApp, onClick = { wholeApp = false }, label = { Text("This chat", maxLines = 1, softWrap = false) })
-                                        FilterChip(selected = wholeApp, onClick = { wholeApp = true }, label = { Text("All of ${d.app}", maxLines = 1, softWrap = false) })
+                                        FilterChip(selected = !wholeApp, colors = awayChipColors(), border = chipBorder(!wholeApp), onClick = { wholeApp = false }, label = { Text("This chat", maxLines = 1, softWrap = false) })
+                                        FilterChip(selected = wholeApp, colors = awayChipColors(), border = chipBorder(wholeApp), onClick = { wholeApp = true }, label = { Text("All of ${d.app}", maxLines = 1, softWrap = false) })
                                     }
                                 }
                                 Text("Don't hold $target for", style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -930,7 +962,7 @@ fun AiScreen() {
     }
     val calls = Prefs.callsToday()
 
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(PagePad)) {
+    Column(Modifier.fillMaxSize().imePadding().verticalScroll(rememberScrollState()).padding(PagePad)) {
         PageHeader("Triage", "Decides which held notifications are urgent enough to come through")
         Panel {
             Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -1211,12 +1243,18 @@ private fun AppPickerDialog(
 // Screen time
 // ---------------------------------------------------------------------------------------------
 
+/** A bar for a limit: mint while there is room, amber near the end, rose once it is reached. */
 @Composable
 private fun LimitBar(fraction: Float) {
+    val f = fraction.coerceIn(0f, 1f)
+    GlowBar(f, when { f >= 1f -> Glow.Rose; f > 0.75f -> Glow.Amber; else -> Glow.Mint })
+}
+
+@Composable
+private fun GlowBar(fraction: Float, c: Color) {
     val f by androidx.compose.animation.core.animateFloatAsState(
-        fraction.coerceIn(0f, 1f), androidx.compose.animation.core.spring(dampingRatio = 0.8f, stiffness = 80f), label = "limit",
+        fraction.coerceIn(0f, 1f), androidx.compose.animation.core.spring(dampingRatio = 0.8f, stiffness = 80f), label = "bar",
     )
-    val c = when { f >= 1f -> Glow.Rose; f > 0.75f -> Glow.Amber; else -> Glow.Mint }
     Box(Modifier.fillMaxWidth().height(7.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.08f))) {
         Box(
             Modifier.fillMaxWidth(f).fillMaxHeight().clip(CircleShape)
@@ -1231,8 +1269,8 @@ fun ScreenTimeScreen() {
     var mode by remember { mutableIntStateOf(0) }
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.padding(start = 20.dp, end = 20.dp, top = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(selected = mode == 0, onClick = { mode = 0 }, label = { Text("Usage") })
-            FilterChip(selected = mode == 1, onClick = { mode = 1 }, label = { Text("Distracting apps") })
+            FilterChip(selected = mode == 0, colors = awayChipColors(), border = chipBorder(mode == 0), onClick = { mode = 0 }, label = { Text("Usage") })
+            FilterChip(selected = mode == 1, colors = awayChipColors(), border = chipBorder(mode == 1), onClick = { mode = 1 }, label = { Text("Distracting apps") })
         }
         if (mode == 0) UsageContent() else AppsScreen()
     }
@@ -1295,7 +1333,7 @@ private fun UsageContent() {
                     Text(fmtUse(mins * 60_000L), style = MaterialTheme.typography.headlineMedium)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         listOf(15, 30, 60, 120).forEach { m ->
-                            FilterChip(selected = mins == m, onClick = { mins = m }, label = { Text(fmtUse(m * 60_000L), maxLines = 1, softWrap = false) })
+                            FilterChip(selected = mins == m, colors = awayChipColors(), border = chipBorder(mins == m), onClick = { mins = m }, label = { Text(fmtUse(m * 60_000L), maxLines = 1, softWrap = false) })
                         }
                     }
                     Row {
@@ -1413,7 +1451,10 @@ private fun UsageContent() {
                         val limit = limits[pkg]
                         Column(Modifier.fillMaxWidth().clickable(enabled = !UsageTracker.isNeverBlock(pkg)) { editing = pkg }.padding(horizontal = 20.dp, vertical = 10.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(labels[pkg] ?: pkg, Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(labels[pkg] ?: pkg, Modifier.weight(1f, fill = false), style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                if (UsageTracker.isNeverBlock(pkg)) {
+                                    Text("  always available", Modifier.weight(1f), style = MaterialTheme.typography.labelSmall, color = Glow.Mint)
+                                } else Spacer(Modifier.weight(1f))
                                 Text(
                                     fmtUse(ms) + if (limit != null) " / ${fmtUse(limit * 60_000L)}" else "",
                                     style = MaterialTheme.typography.bodyMedium,

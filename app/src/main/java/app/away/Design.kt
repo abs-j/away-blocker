@@ -232,7 +232,7 @@ fun GlassNav(pager: PagerState, items: List<NavItem>, onSelect: (Int) -> Unit) {
                             },
                             tint = tint,
                         )
-                        Text(item.label, color = tint, style = MaterialTheme.typography.labelMedium, maxLines = 1)
+                        Text(item.label, color = tint, style = MaterialTheme.typography.labelMedium.copy(fontSize = 11.sp), maxLines = 1, softWrap = false)
                     }
                 }
             }
