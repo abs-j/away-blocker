@@ -47,12 +47,14 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.DateRange
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
@@ -63,7 +65,9 @@ import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
@@ -111,7 +115,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.app.NotificationManagerCompat
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -163,7 +169,7 @@ private data class Tab(val label: String, val on: ImageVector, val off: ImageVec
 
 private val TABS = listOf(
     Tab("Focus", Icons.Filled.Lock, Icons.Outlined.Lock),
-    Tab("Apps", Icons.Filled.List, Icons.Outlined.List),
+    Tab("Usage", Icons.Filled.DateRange, Icons.Outlined.DateRange),
     Tab("Digest", Icons.Filled.Notifications, Icons.Outlined.Notifications),
     Tab("Triage", Icons.Filled.Star, Icons.Outlined.Star),
     Tab("Launcher", Icons.Filled.Home, Icons.Outlined.Home),
@@ -200,7 +206,7 @@ fun App(startTab: Int = 0, onRunSetup: () -> Unit = {}) {
         ) { page ->
             when (page) {
                 0 -> HomeScreen(onRunSetup)
-                1 -> AppsScreen()
+                1 -> ScreenTimeScreen()
                 2 -> DigestScreen()
                 3 -> AiScreen()
                 else -> LauncherSettingsScreen()
@@ -326,6 +332,10 @@ fun a11yEnabled(ctx: Context): Boolean {
 fun listenerEnabled(ctx: Context) =
     NotificationManagerCompat.getEnabledListenerPackages(ctx).contains(ctx.packageName)
 
+fun appLabel(ctx: Context, pkg: String): String =
+    runCatching { ctx.packageManager.getApplicationLabel(ctx.packageManager.getApplicationInfo(pkg, 0)).toString() }
+        .getOrDefault(pkg)
+
 private fun fmtTime(min: Int) = "%02d:%02d".format(min / 60, min % 60)
 
 private fun clock(ms: Long) = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(ms))
@@ -445,6 +455,21 @@ fun HomeScreen(onRunSetup: () -> Unit = {}) {
                         TimePickerDialog(ctx, { _, h, m -> end = h * 60 + m; Prefs.endMin = end; TriageListener.syncNow() }, end / 60, end % 60, true).show()
                     }) { Text("To ${fmtTime(end)}") }
                 }
+            }
+        }
+
+        Panel {
+            var after by remember { mutableIntStateOf(Prefs.indicatorAfterMin) }
+            Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Lock screen timer", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        if (after == 0) "Shown whenever the phone is idle" else "Appears after ${Blocking.formatDuration(after * 60_000L)} untouched",
+                        style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant,
+                    )
+                }
+                TextButton(onClick = { after = (after - 15).coerceAtLeast(0); Prefs.indicatorAfterMin = after }) { Text("-15m") }
+                TextButton(onClick = { after = (after + 15).coerceAtMost(24 * 60); Prefs.indicatorAfterMin = after }) { Text("+15m") }
             }
         }
 
@@ -699,7 +724,7 @@ fun AppsScreen() {
 // Digest
 // ---------------------------------------------------------------------------------------------
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun DigestScreen() {
     val ctx = LocalContext.current
@@ -708,6 +733,7 @@ fun DigestScreen() {
     val items = remember(version) { Prefs.digest() }
     val urgent = items.count { it.urgent }
     val held = TriageListener.heldCount.intValue
+    val rules = remember(version) { Prefs.passRules() }
 
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PagePad, verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item {
@@ -728,6 +754,19 @@ fun DigestScreen() {
                         FilledTonalButton(onClick = { TriageListener.releaseNow() }, modifier = Modifier.padding(end = 12.dp)) {
                             Text("Release all")
                         }
+                    }
+                }
+            }
+        }
+        if (rules.isNotEmpty()) {
+            item {
+                Panel {
+                    Text("Not held", Modifier.padding(horizontal = 20.dp, vertical = 8.dp), style = MaterialTheme.typography.titleMedium)
+                    rules.forEach { (pkg, until) ->
+                        SettingRow(
+                            appLabel(ctx, pkg),
+                            if (until == Prefs.PASS_ALWAYS) "Always comes through" else "Comes through until ${clock(until)}",
+                        ) { TextButton(onClick = { Prefs.clearPass(pkg) }) { Text("Hold again") } }
                     }
                 }
             }
@@ -777,6 +816,28 @@ fun DigestScreen() {
                         if (d.title.isNotBlank()) Text(d.title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         if (d.text.isNotBlank()) Text(d.text, style = MaterialTheme.typography.bodyMedium, maxLines = 3, overflow = TextOverflow.Ellipsis)
                         if (d.reason.isNotBlank()) Text(d.reason, style = MaterialTheme.typography.bodySmall, color = cs.primary)
+                        if (d.pkg.isNotBlank()) {
+                            val until = rules[d.pkg]
+                            if (until != null) {
+                                Text(
+                                    if (until == Prefs.PASS_ALWAYS) "${d.app} is never held" else "${d.app} is not held until ${clock(until)}",
+                                    style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant,
+                                )
+                            } else {
+                                Text("Don't hold ${d.app} for", style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant)
+                                androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    listOf("30 min" to 30, "1 hour" to 60, "4 hours" to 240, "Always" to -1).forEach { (label, mins) ->
+                                        AssistChip(
+                                            onClick = {
+                                                Prefs.setPass(d.pkg, if (mins < 0) Prefs.PASS_ALWAYS else System.currentTimeMillis() + mins * 60_000L)
+                                                TriageListener.releaseApp(d.pkg)
+                                            },
+                                            label = { Text(label, maxLines = 1, softWrap = false) },
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1080,4 +1141,197 @@ private fun AppPickerDialog(
         confirmButton = {},
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
+}
+
+// ---------------------------------------------------------------------------------------------
+// Screen time
+// ---------------------------------------------------------------------------------------------
+
+/** Usage for today and the week, with daily limits per app; the distracting-apps list lives behind a toggle. */
+@Composable
+fun ScreenTimeScreen() {
+    var mode by remember { mutableIntStateOf(0) }
+    Column(Modifier.fillMaxSize()) {
+        Row(Modifier.padding(start = 20.dp, end = 20.dp, top = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(selected = mode == 0, onClick = { mode = 0 }, label = { Text("Usage") })
+            FilterChip(selected = mode == 1, onClick = { mode = 1 }, label = { Text("Distracting apps") })
+        }
+        if (mode == 0) UsageContent() else AppsScreen()
+    }
+}
+
+/** Compact h:mm for the narrow bar labels. */
+private fun fmtHm(ms: Long): String {
+    val m = ms / 60_000
+    return if (m >= 60) "%d:%02d".format(m / 60, m % 60) else "${m}m"
+}
+
+private fun fmtUse(ms: Long): String {
+    val m = ms / 60_000
+    return when {
+        m >= 60 && m % 60 == 0L -> "${m / 60}h"
+        m >= 60 -> "${m / 60}h ${m % 60}m"
+        m >= 1 -> "${m}m"
+        ms > 0 -> "<1m"
+        else -> "0m"
+    }
+}
+
+@Composable
+private fun UsageContent() {
+    val ctx = LocalContext.current
+    val cs = MaterialTheme.colorScheme
+    var access by remember { mutableStateOf(UsageTracker.hasAccess(ctx)) }
+    var today by remember { mutableStateOf<Map<String, Long>>(emptyMap()) }
+    var daily by remember { mutableStateOf<List<Long>>(emptyList()) }
+    var limits by remember { mutableStateOf(Prefs.limits) }
+    var editing by remember { mutableStateOf<String?>(null) }
+    val labels = remember { Apps.loadAll(ctx).associate { it.pkg to it.label } }
+    val pickups = Stats.lastDays(1).last().pickups
+    Stats.version.intValue
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            access = UsageTracker.hasAccess(ctx)
+            if (access) withContext(Dispatchers.IO) {
+                val now = System.currentTimeMillis()
+                today = UsageTracker.usage(ctx, UsageTracker.dayStart(now), now)
+                daily = UsageTracker.dailyTotals(ctx, 7, now)
+            }
+            delay(10_000)
+        }
+    }
+
+    editing?.let { pkg ->
+        var mins by remember(pkg) { mutableIntStateOf(limits[pkg] ?: 30) }
+        AlertDialog(
+            onDismissRequest = { editing = null },
+            title = { Text("Daily limit for ${labels[pkg] ?: pkg}") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(fmtUse(mins * 60_000L), style = MaterialTheme.typography.headlineMedium)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf(15, 30, 60, 120).forEach { m ->
+                            FilterChip(selected = mins == m, onClick = { mins = m }, label = { Text(fmtUse(m * 60_000L), maxLines = 1, softWrap = false) })
+                        }
+                    }
+                    Row {
+                        TextButton(onClick = { mins = (mins - 5).coerceAtLeast(5) }) { Text("-5m") }
+                        TextButton(onClick = { mins = (mins + 5).coerceAtMost(12 * 60) }) { Text("+5m") }
+                        if (pkg in limits) TextButton(onClick = {
+                            limits = limits - pkg; Prefs.limits = limits; editing = null
+                        }) { Text("Remove limit") }
+                    }
+                    Text("The app is blocked for the rest of the day once you reach it.", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { limits = limits + (pkg to mins); Prefs.limits = limits; editing = null }) { Text("Set") }
+            },
+            dismissButton = { TextButton(onClick = { editing = null }) { Text("Cancel") } },
+        )
+    }
+
+    val rows = today.filterKeys { it in labels }.entries.sortedByDescending { it.value }.take(25)
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PagePad, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { PageHeader("Screen time", "Today, per app. Tap an app to set a daily limit.") }
+        if (!access) {
+            item {
+                Panel {
+                    Column(Modifier.padding(horizontal = 20.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Usage access needed", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            "Android only shares app usage with apps you allow. It stays on this phone.",
+                            style = MaterialTheme.typography.bodyMedium, color = cs.onSurfaceVariant,
+                        )
+                        Button(onClick = { safeStart(ctx, Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) }) { Text("Allow usage access") }
+                    }
+                }
+            }
+            return@LazyColumn
+        }
+        item {
+            val total = today.filterKeys { it in labels }.values.sum()
+            val yesterday = daily.getOrNull(daily.size - 2) ?: 0L
+            Box(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(28.dp))
+                    .background(Brush.verticalGradient(listOf(cs.primaryContainer, cs.surfaceContainer))).padding(24.dp),
+            ) {
+                Column {
+                    Text("Today", style = MaterialTheme.typography.labelLarge, color = cs.onSurfaceVariant)
+                    Text(fmtUse(total), fontSize = 56.sp, fontWeight = FontWeight.Light, color = cs.onSurface)
+                    Text(
+                        "$pickups pickups" + if (yesterday > 0) " · yesterday ${fmtUse(yesterday)}" else "",
+                        style = MaterialTheme.typography.bodyMedium, color = cs.onSurface,
+                    )
+                }
+            }
+        }
+        if (daily.isNotEmpty()) {
+            item {
+                Panel {
+                    val max = (daily.maxOrNull() ?: 0L).coerceAtLeast(1L)
+                    val fmt = remember { SimpleDateFormat("EEE", Locale.getDefault()) }
+                    val now = System.currentTimeMillis()
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom,
+                    ) {
+                        daily.forEachIndexed { i, ms ->
+                            val day = fmt.format(Date(now - (daily.size - 1 - i) * 86_400_000L))
+                            Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(fmtHm(ms), style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant, maxLines = 1, softWrap = false)
+                                Box(
+                                    Modifier.padding(vertical = 4.dp).width(20.dp).height(maxOf(3L, 72L * ms / max).toInt().dp)
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .background(if (i == daily.lastIndex) cs.primary else cs.surfaceContainerHigh),
+                                )
+                                Text(day, style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        item { SectionLabel("Apps today") }
+        if (rows.isEmpty()) {
+            item { Hint("No app use recorded yet today.") }
+        } else {
+            item {
+                Panel {
+                    rows.forEachIndexed { i, (pkg, ms) ->
+                        val limit = limits[pkg]
+                        Column(Modifier.fillMaxWidth().clickable { editing = pkg }.padding(horizontal = 20.dp, vertical = 10.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(labels[pkg] ?: pkg, Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(
+                                    fmtUse(ms) + if (limit != null) " / ${fmtUse(limit * 60_000L)}" else "",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = if (limit != null && ms >= limit * 60_000L) cs.error else cs.onSurfaceVariant,
+                                )
+                            }
+                            if (limit != null) {
+                                Spacer(Modifier.height(6.dp))
+                                LinearProgressIndicator(progress = { (ms / (limit * 60_000f)).coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth())
+                            }
+                        }
+                        if (i < rows.lastIndex) Divider()
+                    }
+                }
+            }
+        }
+        val unused = limits.keys.filter { it !in today }
+        if (unused.isNotEmpty()) {
+            item { SectionLabel("Other limits") }
+            item {
+                Panel {
+                    unused.forEach { pkg ->
+                        SettingRow(labels[pkg] ?: pkg, "Limit ${fmtUse(limits.getValue(pkg) * 60_000L)} a day") {
+                            TextButton(onClick = { editing = pkg }) { Text("Edit") }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
