@@ -309,6 +309,7 @@ class BlockerService : AccessibilityService() {
     /** True from unlock until the screen turns off again. */
     private var unlocked = false
     private var shownText = ""
+    private var indicatorHidden = false
     /** False until the first state check after the service starts, which is not a real pickup. */
     private var synced = false
 
@@ -352,15 +353,20 @@ class BlockerService : AccessibilityService() {
     /**
      * Lock screen notification, in whole minutes since you last used the phone. A system chronometer
      * counts seconds, so this is plain text instead, refreshed whenever the screen wakes and each
-     * minute while it stays on. It says "in use" while the phone is unlocked.
+     * minute while it stays on. Not shown while the phone is in use or before the chosen untouched time (default 1 hour).
      */
     private fun postIndicatorNotification() {
-        val title = if (unlocked) {
-            "Phone in use"
-        } else {
-            val since = Prefs.lastPhoneUse.takeIf { it > 0 } ?: Prefs.installTime
-            "Untouched for " + Blocking.formatDuration((System.currentTimeMillis() - since).coerceAtLeast(0))
+        val nm = getSystemService(NotificationManager::class.java)
+        val since = Prefs.lastPhoneUse.takeIf { it > 0 } ?: Prefs.installTime
+        val untouched = (System.currentTimeMillis() - since).coerceAtLeast(0)
+        // Hidden while the phone is in use and until it has sat untouched for the chosen time.
+        if (unlocked || untouched < Prefs.indicatorAfterMin * 60_000L) {
+            // Also clears one left by an earlier run of the service.
+            if (!indicatorHidden) { nm.cancel(1); indicatorHidden = true; shownText = "" }
+            return
         }
+        indicatorHidden = false
+        val title = "Untouched for " + Blocking.formatDuration(untouched)
         if (title == shownText) return
         shownText = title
         val open = PendingIntent.getActivity(
@@ -369,12 +375,12 @@ class BlockerService : AccessibilityService() {
         val b = Notification.Builder(this, AwayApp.CH_INDICATOR)
             .setSmallIcon(R.drawable.ic_stat_away)
             .setContentTitle(title)
-            .setContentText(if (unlocked) "Timer restarts when you put it down" else "Since you last used your phone")
+            .setContentText("Since you last used your phone")
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setShowWhen(false)
             .setVisibility(Notification.VISIBILITY_PUBLIC)
             .setContentIntent(open)
-        getSystemService(NotificationManager::class.java).notify(1, b.build())
+        nm.notify(1, b.build())
     }
 }

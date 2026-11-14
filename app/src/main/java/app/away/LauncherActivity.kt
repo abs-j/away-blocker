@@ -13,6 +13,8 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -107,12 +109,13 @@ object Apps {
 
     fun displayName(e: AppEntry, renames: Map<String, String>) = renames[e.pkg] ?: e.label
 
-    /** Apps the launcher may show right now: not hidden, and not blocked while blocking is active. */
+    /** Apps the launcher may show right now: not hidden, not blocked while blocking is active, not over a daily limit. */
     fun visible(all: List<AppEntry>): List<AppEntry> {
         val hidden = Prefs.hidden
         val blockNow = Blocking.isActive() && !Blocking.isPaused()
         val blocked = Prefs.blocked
-        return all.filter { it.pkg !in hidden && !(blockNow && it.pkg in blocked) }
+        // An app past its daily limit is blocked until midnight, so it also leaves home and search.
+        return all.filter { it.pkg !in hidden && !(blockNow && it.pkg in blocked) && !UsageTracker.overLimit(it.pkg) }
     }
 
     fun launch(ctx: Context, pkg: String): Boolean {
@@ -569,32 +572,25 @@ private fun Drawer(
         }
     }
 
-    // Swipe down anywhere in the drawer (list at top, or list too short to scroll) returns to home.
-    val swipeDown = remember {
-        object : NestedScrollConnection {
-            var acc = 0f
-            override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
-                if (available.y > 0f) acc += available.y else if (consumed.y != 0f) acc = 0f
-                return Offset.Zero
-            }
-
-            override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
-                val close = acc > 120f
-                acc = 0f
-                if (close) onClose()
-                return Velocity.Zero
-            }
-        }
-    }
+    // Swipe down anywhere in the drawer returns to home, as long as the list started at its top.
+    // Watches touches before the list or text field see them and never consumes them, so scrolling,
+    // taps and the keyboard behave as before.
     Column(
         Modifier.fillMaxSize()
-            .nestedScroll(swipeDown)
             .pointerInput(Unit) {
-                var total = 0f
-                detectVerticalDragGestures(
-                    onDragStart = { total = 0f },
-                    onDragEnd = { if (total > 160f) onClose() },
-                ) { _, d -> total += d }
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false, pass = androidx.compose.ui.input.pointer.PointerEventPass.Initial)
+                    val atTop = !listState.canScrollBackward
+                    var dx = 0f
+                    var dy = 0f
+                    do {
+                        val ev = awaitPointerEvent(androidx.compose.ui.input.pointer.PointerEventPass.Initial)
+                        val c = ev.changes.firstOrNull { it.id == down.id } ?: break
+                        dx = c.position.x - down.position.x
+                        dy = c.position.y - down.position.y
+                    } while (c.pressed)
+                    if (atTop && dy > 90.dp.toPx() && dy > kotlin.math.abs(dx) * 1.5f) onClose()
+                }
             }
             .systemBarsPadding().padding(horizontal = 28.dp, vertical = 16.dp),
     ) {

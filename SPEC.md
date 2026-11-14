@@ -12,7 +12,7 @@
 ## 2. Time-away indicator
 - Floating overlay pill showing time since you last used a blocked app (e.g. `3h 12m`).
 - Resets the moment any app on the distracting list is opened and not blocked (Focus off, paused, or app hiding unticked), and stays at 0 while you use it. Blocked attempts do not reset it.
-- Also shown in an ongoing notification so it is visible on the lock screen.
+- Also shown in an ongoing notification on the lock screen, but only once the phone has sat untouched for a chosen time (default 1 hour, adjustable in Focus; 0 = always). Hidden while the phone is in use.
 
 ## 3. Notification triage
 - During focus, suppress all notifications and store them.
@@ -41,6 +41,13 @@
 - During a hold, new urgent notifications break through once as a high-priority alert; everything else returns when Focus ends.
 - The 30-second unlock pauses only app hiding for 10 minutes; notifications stay held.
 - Existing installs migrate once: old Blocking and Hold settings map onto Focus and its two checkboxes.
+
+## 6. Screen time
+- Usage tab (Usage access permission): today's total, pickups, 7-day bars, per-app time today.
+- Tap an app to set a daily limit; reaching it blocks the app until midnight and removes it from home and search. Distracting-apps list sits behind a toggle on the same tab.
+
+## 7. Digest quick actions
+- Each digest item has chips: do not hold that app for 30 min, 1 hour, 4 hours or always. Applies at once (held items for that app are released) and lists under "Not held" with a Hold again button.
 
 ## Screens
 Home (counter, on/off), Blocked apps + schedule, Digest, Permissions setup.

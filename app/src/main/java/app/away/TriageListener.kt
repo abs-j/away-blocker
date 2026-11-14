@@ -96,8 +96,12 @@ class TriageListener : NotificationListenerService() {
         }
     }
 
-    private fun restoreHeld() {
-        val items = synchronized(held) { held.values.toList().also { held.clear() } }
+    private fun restoreHeld(onlyPkg: String? = null) {
+        val items = synchronized(held) {
+            val out = held.values.filter { onlyPkg == null || it.pkg == onlyPkg }
+            out.forEach { held.remove(it.key) }
+            out
+        }
         persist()
         val nm = getSystemService(NotificationManager::class.java)
         items.forEach { h ->
@@ -177,6 +181,8 @@ class TriageListener : NotificationListenerService() {
     private fun process(sbn: StatusBarNotification, fresh: Boolean): Boolean {
         val n = sbn.notification ?: return false
         if (sbn.packageName == packageName || sbn.packageName in ignoredPackages) return false
+        // The user chose to let this app through (from the digest): leave it untouched.
+        if (Prefs.isPassing(sbn.packageName)) return false
         if (sbn.isOngoing || (n.flags and Notification.FLAG_FOREGROUND_SERVICE) != 0) return false
         if (n.category in passThroughCategories) return false
         // Group summaries duplicate their children; just remove them.
@@ -275,5 +281,8 @@ class TriageListener : NotificationListenerService() {
 
         /** Puts every held notification back now. The hold stays on for new ones. */
         fun releaseNow() { instance?.let { l -> l.handler.post { l.restoreHeld() } } }
+
+        /** Puts back what is held for one app, used when that app is set to not be held. */
+        fun releaseApp(pkg: String) { instance?.let { l -> l.handler.post { l.restoreHeld(pkg) } } }
     }
 }

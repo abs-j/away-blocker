@@ -57,6 +57,7 @@ object Prefs {
         if (!sp.contains("install")) sp.edit().putLong("install", System.currentTimeMillis()).apply()
         migrateToFocus()
         Stats.init(app)
+        UsageTracker.init(app)
     }
 
     /**
@@ -148,6 +149,41 @@ object Prefs {
     var lastPhoneUse: Long
         get() = sp.getLong("lastPhoneUse", 0L)
         set(v) = sp.edit().putLong("lastPhoneUse", v).apply()
+
+    /** Minutes untouched before the lock screen timer appears. 0 shows it always. */
+    var indicatorAfterMin: Int
+        get() = sp.getInt("indicatorAfterMin", 60)
+        set(v) = sp.edit().putInt("indicatorAfterMin", v.coerceIn(0, 24 * 60)).apply()
+
+    /** Package to daily limit in minutes. Reaching it blocks the app until midnight. */
+    var limits: Map<String, Int>
+        get() = getMap("limits").mapValues { it.value.toIntOrNull() ?: 0 }.filterValues { it > 0 }
+        set(v) = putMap("limits", v.mapValues { it.value.toString() })
+
+    /** Package to the time (ms) until which its notifications are not held. [PASS_ALWAYS] means no end. */
+    private fun passMap(): Map<String, Long> =
+        getMap("passRules").mapValues { it.value.toLongOrNull() ?: 0L }
+
+    const val PASS_ALWAYS = Long.MAX_VALUE
+
+    /** Apps whose notifications currently go straight through Focus, with when that ends. */
+    fun passRules(now: Long = System.currentTimeMillis()): Map<String, Long> =
+        passMap().filterValues { it > now }
+
+    fun isPassing(pkg: String, now: Long = System.currentTimeMillis()): Boolean =
+        (passMap()[pkg] ?: 0L) > now
+
+    @Synchronized
+    fun setPass(pkg: String, until: Long) {
+        putMap("passRules", (passRules() + (pkg to until)).mapValues { it.value.toString() })
+        digestVersion.intValue++
+    }
+
+    @Synchronized
+    fun clearPass(pkg: String) {
+        putMap("passRules", (passRules() - pkg).mapValues { it.value.toString() })
+        digestVersion.intValue++
+    }
 
     val installTime: Long get() = sp.getLong("install", System.currentTimeMillis())
 
@@ -324,7 +360,7 @@ object Blocking {
     fun isPaused(now: Long = System.currentTimeMillis()) = now < Prefs.unlockUntil
 
     fun shouldBlock(pkg: String?, now: Long = System.currentTimeMillis()): Boolean =
-        pkg != null && pkg in Prefs.blocked && isActive(now) && !isPaused(now)
+        pkg != null && ((pkg in Prefs.blocked && isActive(now) && !isPaused(now)) || UsageTracker.overLimit(pkg, now))
 
     fun formatDuration(ms: Long): String {
         val h = ms / 3_600_000
