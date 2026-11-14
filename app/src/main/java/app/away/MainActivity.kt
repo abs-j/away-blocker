@@ -370,8 +370,10 @@ fun HomeScreen(onRunSetup: () -> Unit = {}) {
     var a11yRunning by remember { mutableStateOf(BlockerService.instance != null) }
     var listener by remember { mutableStateOf(listenerEnabled(ctx)) }
 
-    LaunchedEffect(Unit) {
-        while (true) {
+    // Refresh once a second, but only while Away is actually on screen.
+    val screenOn = LocalAnimActive.current
+    LaunchedEffect(screenOn) {
+        while (screenOn) {
             now = System.currentTimeMillis()
             a11y = a11yEnabled(ctx)
             a11yRunning = BlockerService.instance != null
@@ -419,9 +421,7 @@ fun HomeScreen(onRunSetup: () -> Unit = {}) {
         Spacer(Modifier.height(12.dp))
         // Hero: the distraction-free timer, as a glowing ring that fills toward the next milestone.
         val away = Blocking.awayMillis(now)
-        val milestones = remember { listOf(15L, 60L, 180L, 480L, 1440L, 4320L).map { it * 60_000L } }
-        val prevMark = milestones.lastOrNull { it <= away } ?: 0L
-        val nextMark = milestones.firstOrNull { it > away } ?: (milestones.last() * 2)
+        val nextMark = Streak.next(away)
         val shown = remember { androidx.compose.animation.core.Animatable(0f) }
         LaunchedEffect(away / 60_000L) {
             shown.animateTo((away / 60_000L).toFloat(), androidx.compose.animation.core.tween(1500, easing = androidx.compose.animation.core.FastOutSlowInEasing))
@@ -434,7 +434,7 @@ fun HomeScreen(onRunSetup: () -> Unit = {}) {
         ) {
             Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
                 Text("SINCE A DISTRACTING APP", style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant, letterSpacing = 1.6.sp)
-                StreakRing(((away - prevMark).toFloat() / (nextMark - prevMark)).coerceIn(0f, 1f), Modifier.fillMaxWidth(0.8f).padding(vertical = 4.dp)) {
+                StreakRing(Streak.progress(away), Modifier.fillMaxWidth(0.8f).padding(vertical = 4.dp)) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(
                             Blocking.formatDuration((shown.value * 60_000L).toLong()),
@@ -449,11 +449,7 @@ fun HomeScreen(onRunSetup: () -> Unit = {}) {
                     style = MaterialTheme.typography.titleMedium, color = cs.onSurface, textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                 )
                 Spacer(Modifier.height(14.dp))
-                val dot by androidx.compose.animation.core.rememberInfiniteTransition(label = "dot").animateFloat(
-                    0.35f, 1f,
-                    androidx.compose.animation.core.infiniteRepeatable(androidx.compose.animation.core.tween(1100), androidx.compose.animation.core.RepeatMode.Reverse),
-                    label = "dot",
-                )
+                val dot by rememberLoop(0.35f, 1f, 1100)
                 Row(
                     Modifier.glass(CircleShape, if (active) 0.12f else 0.06f).padding(horizontal = 14.dp, vertical = 7.dp),
                     verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1065,8 +1061,9 @@ fun LauncherSettingsScreen() {
     var rev by remember { mutableIntStateOf(0) }
     var isHome by remember { mutableStateOf(isDefaultHome(ctx)) }
     var picker by remember { mutableStateOf<PickFor?>(null) }
-    LaunchedEffect(Unit) {
-        while (true) { isHome = isDefaultHome(ctx); delay(1500) }
+    val screenActive = LocalAnimActive.current
+    LaunchedEffect(screenActive) {
+        while (screenActive) { isHome = isDefaultHome(ctx); delay(1500) }
     }
 
     // Snapshots of the launcher prefs, refreshed after every edit. Uninstalled apps are skipped.
@@ -1301,18 +1298,28 @@ private fun UsageContent() {
     var today by remember { mutableStateOf<Map<String, Long>>(emptyMap()) }
     var daily by remember { mutableStateOf<List<Long>>(emptyList()) }
     var limits by remember { mutableStateOf(Prefs.limits) }
+    var blockedNow by remember { mutableStateOf(Prefs.blocked) }
+    var dismissed by remember { mutableStateOf(Prefs.suggestDismissed) }
     var editing by remember { mutableStateOf<String?>(null) }
     val labels = remember { Apps.loadAll(ctx).associate { it.pkg to it.label } }
     val pickups = remember(Stats.version.intValue) { Stats.lastDays(1).last().pickups }
 
-    LaunchedEffect(Unit) {
-        while (true) {
+    // Query only while this tab is on screen. The seven daily totals are the expensive part, so they refresh
+    // once a minute while today's per-app numbers refresh every ten seconds.
+    val appActive = LocalAnimActive.current
+    val pageOffset = LocalPageOffset.current
+    val onScreen by remember { androidx.compose.runtime.derivedStateOf { kotlin.math.abs(pageOffset()) < 0.99f } }
+    LaunchedEffect(appActive, onScreen) {
+        var round = 0
+        // Starts the moment the tab comes into view, so the numbers are there as soon as you arrive.
+        while (appActive && onScreen) {
             access = UsageTracker.hasAccess(ctx)
             if (access) withContext(Dispatchers.IO) {
                 val now = System.currentTimeMillis()
                 today = UsageTracker.usage(ctx, UsageTracker.dayStart(now), now)
-                daily = UsageTracker.dailyTotals(ctx, 7, now)
+                if (round % 6 == 0 || daily.isEmpty()) daily = UsageTracker.dailyTotals(ctx, 7, now)
             }
+            round++
             delay(10_000)
         }
     }
@@ -1435,6 +1442,26 @@ private fun UsageContent() {
                                         ),
                                 )
                                 Text(day, style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        val suggestions = Suggestions.pick(today, labels.keys, blockedNow, UsageTracker.neverBlock(ctx), dismissed)
+        if (suggestions.isNotEmpty()) {
+            item {
+                Panel(Modifier.staggerIn(2).cascade(2)) {
+                    Text("Add to distracting apps?", Modifier.padding(horizontal = 20.dp, vertical = 8.dp), style = MaterialTheme.typography.titleMedium)
+                    suggestions.forEach { (pkg, ms) ->
+                        Column(Modifier.padding(horizontal = 20.dp, vertical = 6.dp)) {
+                            Text(
+                                "${labels[pkg] ?: pkg} took ${fmtUse(ms)} today. Hide it and count it in your streak while Focus is on?",
+                                style = MaterialTheme.typography.bodyMedium, color = cs.onSurfaceVariant,
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                FilledTonalButton(onClick = { blockedNow = blockedNow + pkg; Prefs.blocked = blockedNow }) { Text("Add ${labels[pkg] ?: pkg}") }
+                                TextButton(onClick = { dismissed = dismissed + pkg; Prefs.suggestDismissed = dismissed }) { Text("Not now") }
                             }
                         }
                     }
