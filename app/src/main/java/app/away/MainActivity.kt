@@ -41,6 +41,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
@@ -109,6 +110,9 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -486,7 +490,7 @@ fun HomeScreen(onRunSetup: () -> Unit = {}) {
                 holdsNotifs = it; Prefs.focusHoldsNotifs = it; TriageListener.syncNow()
             }
             Divider()
-            ToggleRow("Daily schedule", if (sched) "Focus runs ${fmtTime(start)} to ${fmtTime(end)}" else "Focus runs whenever it is on", sched) {
+            ToggleRow("Daily schedule", if (sched && start == end) "Start and end are the same, so Focus never runs" else if (sched) "Focus runs ${fmtTime(start)} to ${fmtTime(end)}" else "Focus runs whenever it is on", sched) {
                 sched = it; Prefs.scheduleEnabled = it; TriageListener.syncNow()
             }
             AnimatedVisibility(sched, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
@@ -507,8 +511,14 @@ fun HomeScreen(onRunSetup: () -> Unit = {}) {
                         style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant,
                     )
                 }
-                TextButton(onClick = { after = (after - 15).coerceAtLeast(0); Prefs.indicatorAfterMin = after }) { Text("-15m") }
-                TextButton(onClick = { after = (after + 15).coerceAtMost(24 * 60); Prefs.indicatorAfterMin = after }) { Text("+15m") }
+                TextButton(
+                    onClick = { after = (after - 15).coerceAtLeast(0); Prefs.indicatorAfterMin = after },
+                    modifier = Modifier.semantics { contentDescription = "Show 15 minutes sooner" },
+                ) { Text("-15m") }
+                TextButton(
+                    onClick = { after = (after + 15).coerceAtMost(24 * 60); Prefs.indicatorAfterMin = after },
+                    modifier = Modifier.semantics { contentDescription = "Show 15 minutes later" },
+                ) { Text("+15m") }
             }
         }
 
@@ -623,7 +633,8 @@ private fun WeekStats(now: Long) {
     val gapSum = week.sumOf { it.gapSum }
     val longest = maxOf(week.maxOf { it.longest }, Blocking.awayMillis(now))
     val maxBar = maxOf(1, week.maxOf { it.opens })
-    val dayFmt = SimpleDateFormat("EEE", Locale.getDefault())
+    val dayFmt = remember { SimpleDateFormat("EEE", Locale.getDefault()) }
+    val dayName = remember { SimpleDateFormat("EEEE", Locale.getDefault()) }
     // Average over days that have any data, so the first week is not diluted by empty days.
     val tracked = week.count { it.opens > 0 || it.blocked > 0 || it.pickups > 0 }.coerceAtLeast(1)
 
@@ -646,7 +657,10 @@ private fun WeekStats(now: Long) {
             verticalAlignment = Alignment.Bottom,
         ) {
             week.forEachIndexed { i, d ->
-                Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                Column(
+                    Modifier.weight(1f).clearAndSetSemantics { contentDescription = "${dayName.format(Date(d.start))}: ${d.opens} opens" },
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
                     Text(if (d.opens > 0) "${d.opens}" else "", style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant)
                     Box(
                         Modifier.fillMaxWidth().height((6 + 64 * d.opens / maxBar).dp)
@@ -691,7 +705,7 @@ private fun TimeDialog(title: String, minutes: Int, onPick: (Int) -> Unit, onDis
 
 @Composable
 private fun StatCell(label: String, value: String, modifier: Modifier = Modifier) {
-    Column(modifier.padding(12.dp)) {
+    Column(modifier.semantics(mergeDescendants = true) {}.padding(12.dp)) {
         Text(value, style = MaterialTheme.typography.titleLarge.copy(fontSize = 20.sp), maxLines = 1, softWrap = false)
         Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
@@ -740,10 +754,24 @@ private fun PermRow(title: String, why: String, action: String = "Enable", onOpe
 // Distracting apps
 // ---------------------------------------------------------------------------------------------
 
+/** Installed apps, drawn instantly from the cache and refreshed off the main thread. */
+@Composable
+internal fun rememberInstalledApps(): List<AppEntry> {
+    val ctx = LocalContext.current
+    var apps by remember { mutableStateOf(Apps.cache.ifEmpty { Apps.loadAll(ctx) }.sortedBy { it.label.lowercase() }) }
+    LaunchedEffect(Unit) {
+        val fresh = withContext(Dispatchers.Default) { Apps.loadAll(ctx.applicationContext) }
+        Apps.cache = fresh
+        val sorted = fresh.sortedBy { it.label.lowercase() }
+        if (sorted != apps) apps = sorted
+    }
+    return apps
+}
+
 @Composable
 fun AppsScreen() {
     val ctx = LocalContext.current
-    val apps = remember { Apps.loadAll(ctx).sortedBy { it.label.lowercase() } }
+    val apps = rememberInstalledApps()
     var blocked by remember { mutableStateOf(Prefs.blocked) }
     // Order is fixed when the screen opens so rows do not jump while you tick them.
     val initial = remember { Prefs.blocked }
@@ -809,6 +837,7 @@ fun DigestScreen() {
     val urgent = items.count { it.urgent }
     val held = TriageListener.heldCount.intValue
     val rules = remember(version) { Prefs.passRules() }
+    val keys = remember(items) { DigestKeys.of(items) }
 
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PagePad, verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item {
@@ -825,7 +854,16 @@ fun DigestScreen() {
         if (held > 0) {
             item {
                 Panel(Modifier.cascade(1)) {
-                    SettingRow("$held held right now", "They return when Focus ends") {
+                    val notifsOn = remember(held) { notificationsAllowed(ctx) }
+                    SettingRow(
+                        "$held held right now",
+                        if (notifsOn) "They return when Focus ends" else "Away's notifications are off. They come back once you turn them on.",
+                    ) {
+                        if (!notifsOn) {
+                            TextButton(onClick = {
+                                safeStart(ctx, Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, ctx.packageName))
+                            }) { Text("Turn on") }
+                        }
                         FilledTonalButton(onClick = { TriageListener.releaseNow() }, modifier = Modifier.padding(end = 12.dp)) {
                             Text("Release all")
                         }
@@ -866,7 +904,7 @@ fun DigestScreen() {
                 )
             }
         }
-        items(items, key = { "${it.time}_${it.app}_${it.title.hashCode()}" }) { d ->
+        itemsIndexed(items, key = { i, _ -> keys[i] }) { _, d ->
             val state = rememberSwipeToDismissBoxState(confirmValueChange = { v ->
                 if (v != SwipeToDismissBoxValue.Settled) { Prefs.removeDigest(d); true } else false
             })
@@ -885,7 +923,7 @@ fun DigestScreen() {
                 },
             ) {
                 val launch = remember(d.pkg) { d.pkg.takeIf { it.isNotBlank() }?.let { ctx.packageManager.getLaunchIntentForPackage(it) } }
-                Panel(Modifier.clip(RoundedCornerShape(24.dp)).clickable(enabled = launch != null) { launch?.let { safeStart(ctx, it) } }) {
+                Panel(Modifier.clip(RoundedCornerShape(24.dp)).clickable(enabled = launch != null, onClickLabel = "Open ${d.app}") { launch?.let { safeStart(ctx, it) } }) {
                     Column(Modifier.padding(horizontal = 20.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
@@ -949,7 +987,7 @@ fun AiScreen() {
     var model by remember { mutableStateOf(Prefs.model) }
     var vips by remember { mutableStateOf(Prefs.vips) }
     var priv by remember { mutableStateOf(Prefs.privateApps) }
-    val openRouter = key.startsWith("sk-or-")
+    val openRouter = key.trim().startsWith("sk-or-")
     val defaultModel = if (openRouter) "openai/gpt-4o-mini" else "claude-haiku-5-5"
     val provider = when {
         key.isBlank() -> "Optional. Add your own key below"
@@ -1001,6 +1039,7 @@ fun AiScreen() {
                     label = { Text("API key") }, supportingText = { Text("Anthropic (sk-ant-…) or OpenRouter (sk-or-…)") },
                     singleLine = true, shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth(),
                     visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Password),
                 )
                 OutlinedTextField(
                     value = model, onValueChange = { model = it; Prefs.model = it },
@@ -1056,7 +1095,7 @@ fun isDefaultHome(ctx: Context): Boolean =
 fun LauncherSettingsScreen() {
     val ctx = LocalContext.current
     val cs = MaterialTheme.colorScheme
-    val apps = remember { Apps.loadAll(ctx).sortedBy { it.label.lowercase() } }
+    val apps = rememberInstalledApps()
     val byPkg = remember(apps) { apps.associateBy { it.pkg } }
     var rev by remember { mutableIntStateOf(0) }
     var isHome by remember { mutableStateOf(isDefaultHome(ctx)) }
@@ -1067,10 +1106,10 @@ fun LauncherSettingsScreen() {
     }
 
     // Snapshots of the launcher prefs, refreshed after every edit. Uninstalled apps are skipped.
-    val pinned = remember(rev) { Prefs.pinned.filter { it in byPkg } }
-    val hidden = remember(rev) { Prefs.hidden.filter { it in byPkg }.sortedBy { byPkg[it]!!.label.lowercase() } }
-    val renames = remember(rev) { Prefs.renames.filterKeys { it in byPkg } }
-    val delays = remember(rev) { Prefs.delays.filterKeys { it in byPkg }.toList().sortedBy { byPkg[it.first]!!.label.lowercase() } }
+    val pinned = remember(rev, byPkg) { Prefs.pinned.filter { it in byPkg } }
+    val hidden = remember(rev, byPkg) { Prefs.hidden.filter { it in byPkg }.sortedBy { byPkg[it]!!.label.lowercase() } }
+    val renames = remember(rev, byPkg) { Prefs.renames.filterKeys { it in byPkg } }
+    val delays = remember(rev, byPkg) { Prefs.delays.filterKeys { it in byPkg }.toList().sortedBy { byPkg[it.first]!!.label.lowercase() } }
     fun name(pkg: String) = renames[pkg] ?: byPkg[pkg]?.label ?: pkg
     fun edit(block: () -> Unit) { block(); rev++ }
 
@@ -1096,11 +1135,11 @@ fun LauncherSettingsScreen() {
                     SettingRow(name(pkg), if (i == 3 && pinned.size > 4) "Last one shown while Focus hides apps" else null) {
                         IconButton(enabled = i > 0, onClick = {
                             edit { Prefs.pinned = pinned.toMutableList().apply { add(i - 1, removeAt(i)) } }
-                        }) { Icon(Icons.Outlined.KeyboardArrowUp, "Move up") }
+                        }) { Icon(Icons.Outlined.KeyboardArrowUp, "Move ${name(pkg)} up") }
                         IconButton(enabled = i < pinned.lastIndex, onClick = {
                             edit { Prefs.pinned = pinned.toMutableList().apply { add(i + 1, removeAt(i)) } }
-                        }) { Icon(Icons.Outlined.KeyboardArrowDown, "Move down") }
-                        IconButton(onClick = { edit { Prefs.pinned = pinned - pkg } }) { Icon(Icons.Outlined.Close, "Remove") }
+                        }) { Icon(Icons.Outlined.KeyboardArrowDown, "Move ${name(pkg)} down") }
+                        IconButton(onClick = { edit { Prefs.pinned = pinned - pkg } }) { Icon(Icons.Outlined.Close, "Remove ${name(pkg)}") }
                     }
                 }
                 AddRow("Add app") { picker = PickFor.PIN }
@@ -1143,7 +1182,7 @@ fun LauncherSettingsScreen() {
                             val next = when (secs) { 5 -> 10; 10 -> 15; 15 -> 30; else -> 5 }
                             edit { Prefs.delays = Prefs.delays + (pkg to next) }
                         }) { Text("${secs}s") }
-                        IconButton(onClick = { edit { Prefs.delays = Prefs.delays - pkg } }) { Icon(Icons.Outlined.Close, "Remove") }
+                        IconButton(onClick = { edit { Prefs.delays = Prefs.delays - pkg } }) { Icon(Icons.Outlined.Close, "Remove delay for ${name(pkg)}") }
                     }
                 }
                 AddRow("Add delay") { picker = PickFor.DELAY }
@@ -1301,7 +1340,8 @@ private fun UsageContent() {
     var blockedNow by remember { mutableStateOf(Prefs.blocked) }
     var dismissed by remember { mutableStateOf(Prefs.suggestDismissed) }
     var editing by remember { mutableStateOf<String?>(null) }
-    val labels = remember { Apps.loadAll(ctx).associate { it.pkg to it.label } }
+    val apps = rememberInstalledApps()
+    val labels = remember(apps) { apps.associate { it.pkg to it.label } }
     val pickups = remember(Stats.version.intValue) { Stats.lastDays(1).last().pickups }
 
     // Query only while this tab is on screen. The seven daily totals are the expensive part, so they refresh
@@ -1418,14 +1458,19 @@ private fun UsageContent() {
                 Panel(Modifier.staggerIn(1).cascade(1)) {
                     val max = (daily.maxOrNull() ?: 0L).coerceAtLeast(1L)
                     val fmt = remember { SimpleDateFormat("EEE", Locale.getDefault()) }
+                    val fullDay = remember { SimpleDateFormat("EEEE", Locale.getDefault()) }
                     val now = System.currentTimeMillis()
                     Row(
                         Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp),
                         horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom,
                     ) {
                         daily.forEachIndexed { i, ms ->
-                            val day = fmt.format(Date(now - (daily.size - 1 - i) * 86_400_000L))
-                            Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                            val dayDate = Date(UsageTracker.dayStart(now, daily.size - 1 - i))
+                            val day = fmt.format(dayDate)
+                            Column(
+                                Modifier.weight(1f).clearAndSetSemantics { contentDescription = "${fullDay.format(dayDate)}: ${fmtUse(ms)}" },
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                            ) {
                                 Text(fmtHm(ms), style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant, maxLines = 1, softWrap = false)
                                 var grown by remember { mutableStateOf(false) }
                                 LaunchedEffect(daily) { delay(120L + i * 70L); grown = true }

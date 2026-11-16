@@ -26,7 +26,7 @@ Uninstalling Away deletes all of it. Away turns off Android backup, so none of i
 
 ## What leaves your phone
 
-Nothing, unless you add your own AI key. If you do, then for notifications that the on-device rules do not already decide, Away sends the app name, the notification title, up to 300 characters of its text and your VIP names to the provider you chose (Anthropic or OpenRouter) to ask whether it is urgent. Before sending, it removes numbers of four or more digits, email addresses and links. Notifications from apps you mark as private are never sent. The provider's own privacy policy applies to that request. Away limits this to 200 requests a day.
+Nothing, unless you add your own AI key. If you do, then for notifications that the on-device rules do not already decide, Away sends the app name, the notification title, up to 300 characters of its text and your VIP names to the provider you chose (Anthropic or OpenRouter) to ask whether it is urgent. Before sending, it removes phone numbers, numbers of four or more digits, email addresses and links. Notifications from apps you mark as private are never sent. The provider's own privacy policy applies to that request. Away limits this to 200 requests a day.
 
 ## Contact
 

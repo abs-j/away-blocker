@@ -33,7 +33,7 @@ class TriageListener : NotificationListenerService() {
     )
 
     private val held = LinkedHashMap<String, Held>()
-    private var holding = false
+    @Volatile private var holding = false
 
     private val tick = object : Runnable {
         override fun run() {
@@ -51,14 +51,16 @@ class TriageListener : NotificationListenerService() {
 
     /** Saves what is held (without icons and tap actions, which cannot be stored). */
     private fun persist() {
-        val items = synchronized(held) { held.values.toList() }
-        val arr = JSONArray()
-        items.forEach {
-            arr.put(JSONObject().put("key", it.key).put("pkg", it.pkg).put("app", it.app)
-                .put("title", it.title).put("text", it.text).put("time", it.time))
+        val size = synchronized(held) {
+            val arr = JSONArray()
+            held.values.forEach {
+                arr.put(JSONObject().put("key", it.key).put("pkg", it.pkg).put("app", it.app)
+                    .put("title", it.title).put("text", it.text).put("time", it.time))
+            }
+            Prefs.heldStore = arr.toString()
+            held.size
         }
-        Prefs.heldStore = arr.toString()
-        heldCount.intValue = items.size
+        heldCount.intValue = size
     }
 
     /** After a restart, brings back held notifications saved before the process died. */
@@ -66,11 +68,13 @@ class TriageListener : NotificationListenerService() {
         val arr = runCatching { JSONArray(Prefs.heldStore) }.getOrNull() ?: return
         synchronized(held) {
             for (i in 0 until arr.length()) {
-                val o = arr.getJSONObject(i)
-                val key = o.getString("key")
-                if (key !in held) {
-                    held[key] = Held(key, o.optString("pkg"), o.optString("app"), o.optString("title"),
-                        o.optString("text"), o.optLong("time"), null, null)
+                runCatching {
+                    val o = arr.getJSONObject(i)
+                    val key = o.optString("key")
+                    if (key.isNotBlank() && key !in held) {
+                        held[key] = Held(key, o.optString("pkg"), o.optString("app"), o.optString("title"),
+                            o.optString("text"), o.optLong("time"), null, null)
+                    }
                 }
             }
         }
@@ -80,7 +84,22 @@ class TriageListener : NotificationListenerService() {
     override fun onListenerDisconnected() {
         handler.removeCallbacks(tick)
         if (instance === this) instance = null
+        // Notification access was revoked: put everything back at once.
+        if (!androidx.core.app.NotificationManagerCompat.getEnabledListenerPackages(this).contains(packageName)) {
+            holding = false
+            restoreHeld()
+        }
     }
+
+    override fun onDestroy() {
+        handler.removeCallbacksAndMessages(null)
+        pool.shutdown()
+        if (instance === this) instance = null
+        super.onDestroy()
+    }
+
+    /** False when the user turned off Away's notifications; restored items would be dropped silently. */
+    private fun canPost() = getSystemService(NotificationManager::class.java).areNotificationsEnabled()
 
     /** Starts or ends the hold when the setting or schedule says so. Safe to call often. */
     fun syncHold() {
@@ -99,6 +118,7 @@ class TriageListener : NotificationListenerService() {
     }
 
     private fun restoreHeld(onlyPkg: String? = null, onlyTitle: String? = null) {
+        if (!canPost()) return
         val items = synchronized(held) {
             val out = held.values.filter {
                 onlyPkg == null || (it.pkg == onlyPkg &&
@@ -161,36 +181,10 @@ class TriageListener : NotificationListenerService() {
         Notification.CATEGORY_SYSTEM,
         Notification.CATEGORY_REMINDER,
     )
-    private val lowValueCategories = setOf(
-        Notification.CATEGORY_PROMO,
-        Notification.CATEGORY_SOCIAL,
-        Notification.CATEGORY_RECOMMENDATION,
-    )
     private val ignoredPackages = setOf(
         "android", "com.android.systemui", "com.android.providers.downloads",
         "com.abs.circletochatgpt", // reply drafts and agent status from Circle to ChatGPT must stay visible
     )
-    private val otp = Regex(
-        "(?i)\\b(otp|verification code|security code|one[- ]time (pass)?code|passcode|2fa|login code|code)\\b\\D{0,30}\\b\\d{4,8}\\b"
-    )
-    private val promoWords = Regex("(?i)promo|\\bsale\\b|% off|coupon|discount")
-
-    /**
-     * On-device urgency rules, used when no AI key is set (and as a quick path before the AI).
-     * Each pattern is a time-sensitive situation; the label becomes the digest reason.
-     */
-    private val urgentRules = listOf(
-        "emergency" to Regex("(?i)\\b(emergency|urgent|asap|ambulance|hospital|accident)\\b"),
-        "asks you to call" to Regex("(?i)\\b(call me|call back|ring me|pick up|answer your phone|are you (ok|okay|there))\\b"),
-        "needs you now" to Regex("(?i)\\b(right now|come (now|quick|asap)|where are you|need you|help me)\\b"),
-        "travel change" to Regex("(?i)\\b(gate (change|changed)|boarding|flight (delayed|cancell?ed)|your (driver|ride|uber) is (here|arriving)|delivery (is )?arriving)\\b"),
-        "security alert" to Regex("(?i)\\b(fraud|suspicious|unusual (activity|sign.?in)|declined|security alert|new (sign.?in|login))\\b"),
-    )
-
-    private fun ruleVerdict(combined: String): Verdict? {
-        if (promoWords.containsMatchIn(combined)) return null
-        return urgentRules.firstOrNull { it.second.containsMatchIn(combined) }?.let { Verdict(true, it.first) }
-    }
     private val lastTextByKey = HashMap<String, String>()
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
@@ -254,6 +248,7 @@ class TriageListener : NotificationListenerService() {
      * continues. It is taken out of the held set so it is not shown a second time when the hold ends.
      */
     private fun breakThrough(key: String, reason: String) {
+        if (!canPost()) return
         val h = synchronized(held) { held.remove(key) } ?: return
         persist()
         val b = Notification.Builder(this, AwayApp.CH_URGENT)
@@ -272,20 +267,11 @@ class TriageListener : NotificationListenerService() {
     }
 
     private fun decide(pkg: String, app: String, title: String, text: String, category: String?): Verdict {
-        val combined = "$title $text"
-        if (category in lowValueCategories) return Verdict(false, "social or promo category")
-        if (otp.containsMatchIn(combined) && !promoWords.containsMatchIn(combined)) {
-            return Verdict(true, "verification code")
-        }
-
         val vips = Prefs.vipList()
-        val vipHit = vips.any { combined.contains(it, ignoreCase = true) }
-        if (vipHit) return Verdict(true, "VIP contact")
-        val rule = ruleVerdict(combined)
-        val key = Prefs.apiKey
-        // Without AI (or for private apps), the on-device rules decide.
         // A rule match is decided on the phone and never sent to the AI.
-        if (rule != null) return rule
+        TriageRules.local(title, text, category, vips)?.let { return it }
+        val key = Prefs.apiKey
+        // Without AI (or for private apps), the default is not urgent.
         if (!Prefs.triageEnabled || key.isBlank() || pkg in Prefs.privateSet()) {
             return Verdict(false, "not urgent (on-device rules)")
         }

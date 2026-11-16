@@ -111,12 +111,23 @@ object Apps {
 
     /** Apps the launcher may show right now: not hidden, not blocked while blocking is active, not over a daily limit. */
     fun visible(all: List<AppEntry>): List<AppEntry> {
-        val hidden = Prefs.hidden
         val blockNow = Blocking.isActive() && !Blocking.isPaused()
-        val blocked = Prefs.blocked
         // An app past its daily limit is blocked until midnight, so it also leaves home and search.
-        return all.filter { it.pkg !in hidden && !(blockNow && it.pkg in blocked) && !UsageTracker.overLimit(it.pkg) }
+        // Only apps that have a limit are checked, so the usage lookup is skipped for the rest.
+        val now = System.currentTimeMillis()
+        val limited = Prefs.limits.keys
+        return filterVisible(all, Prefs.hidden, Prefs.blocked, blockNow) { it in limited && UsageTracker.overLimit(it, now) }
     }
+
+    /** Pure filtering rules behind [visible], kept free of Android state so they can be unit tested. */
+    fun filterVisible(
+        all: List<AppEntry>,
+        hidden: Set<String>,
+        blocked: Set<String>,
+        blockNow: Boolean,
+        overLimit: (String) -> Boolean,
+    ): List<AppEntry> =
+        all.filter { it.pkg !in hidden && !(blockNow && it.pkg in blocked) && !overLimit(it.pkg) }
 
     fun launch(ctx: Context, pkg: String): Boolean {
         if (Blocking.shouldBlock(pkg)) {
@@ -125,8 +136,8 @@ object Apps {
         }
         val i = ctx.packageManager.getLaunchIntentForPackage(pkg) ?: return false
         val fade = android.app.ActivityOptions.makeCustomAnimation(ctx, android.R.anim.fade_in, android.R.anim.fade_out)
-        ctx.startActivity(i, fade.toBundle())
-        return true
+        // A just-disabled or uninstalled app can throw here; report failure so callers can fall back.
+        return runCatching { ctx.startActivity(i, fade.toBundle()) }.isSuccess
     }
 
     /** Lower is better, -1 means no match. Prefix, word prefix, substring, initials, then subsequence. */
@@ -157,12 +168,20 @@ object Apps {
 /** Lock screen wallpaper if the OS lets us read it, else the home wallpaper is shown by the window itself. */
 object Wallpaper {
     @Volatile var cached: androidx.compose.ui.graphics.ImageBitmap? = null
+    @Volatile private var cachedIds: Pair<Int, Int>? = null
 
     private fun open(wm: android.app.WallpaperManager, flag: Int) =
         runCatching { wm.getWallpaperFile(flag) }.getOrNull()
 
     fun load(ctx: Context): androidx.compose.ui.graphics.ImageBitmap? {
         val wm = android.app.WallpaperManager.getInstance(ctx)
+        // Wallpaper ids change when the wallpaper does (including daily wallpapers), so an
+        // unchanged pair means the cached bitmap is still current and decoding can be skipped.
+        val ids = runCatching {
+            wm.getWallpaperId(android.app.WallpaperManager.FLAG_LOCK) to wm.getWallpaperId(android.app.WallpaperManager.FLAG_SYSTEM)
+        }.getOrNull()
+        val hit = cached
+        if (ids != null && ids == cachedIds && hit != null) return hit
         for (flag in intArrayOf(android.app.WallpaperManager.FLAG_LOCK, android.app.WallpaperManager.FLAG_SYSTEM)) {
             val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
             open(wm, flag)?.use { android.graphics.BitmapFactory.decodeFileDescriptor(it.fileDescriptor, null, bounds) }
@@ -173,7 +192,7 @@ object Wallpaper {
             val bmp = open(wm, flag)?.use {
                 android.graphics.BitmapFactory.decodeFileDescriptor(it.fileDescriptor, null, opts)
             } ?: continue
-            return bmp.asImageBitmap().also { cached = it }
+            return bmp.asImageBitmap().also { cached = it; cachedIds = ids }
         }
         return null
     }
@@ -238,7 +257,7 @@ fun LauncherRoot(resumeRev: Int) {
         }
     }
     // Close the drawer when home is pressed again.
-    LaunchedEffect(resumeRev) { drawer = false; now = System.currentTimeMillis() }
+    LaunchedEffect(resumeRev) { drawer = false; pending = null; now = System.currentTimeMillis() }
     // Home is the root: swallow Back here. Registered first, so the drawer's and the launch
     // countdown's own Back handlers (composed later) take priority while they are showing.
     BackHandler { }
@@ -251,7 +270,7 @@ fun LauncherRoot(resumeRev: Int) {
         if (fresh != all) all = fresh
     }
     var darkInk by remember { mutableStateOf(wallpaperWantsDarkText(ctx)) }
-    LaunchedEffect(resumeRev) { darkInk = wallpaperWantsDarkText(ctx) }
+    LaunchedEffect(resumeRev) { darkInk = withContext(Dispatchers.Default) { wallpaperWantsDarkText(ctx) } }
     val ink by animateColorAsState(if (darkInk) Color(0xFF111111) else Color.White, tween(250), label = "ink")
     var wallpaper by remember { mutableStateOf(Wallpaper.cached) }
     LaunchedEffect(resumeRev) {
@@ -262,6 +281,8 @@ fun LauncherRoot(resumeRev: Int) {
     val haptic = LocalHapticFeedback.current
     val homeAlpha by animateFloatAsState(if (drawer) 0f else 1f, tween(200), label = "homeAlpha")
     val renames = remember(resumeRev, localRev) { Prefs.renames }
+    val pinnedPkgs = remember(resumeRev, localRev) { Prefs.pinned }
+    val delays = remember(resumeRev, localRev) { Prefs.delays }
     val visible = remember(now / 5000, resumeRev, localRev, all) { Apps.visible(all) }
     val byPkg = remember(visible) { visible.associateBy { it.pkg } }
 
@@ -334,7 +355,7 @@ fun LauncherRoot(resumeRev: Int) {
                 ),
             ),
         )
-        val pinned = Prefs.pinned.mapNotNull { byPkg[it] }.let { if (focus) it.take(FOCUS_LIMIT) else it }
+        val pinned = pinnedPkgs.mapNotNull { byPkg[it] }.let { if (focus) it.take(FOCUS_LIMIT) else it }
         Column(
             Modifier.fillMaxSize().graphicsLayer { alpha = homeAlpha }
                 .systemBarsPadding()
@@ -362,14 +383,14 @@ fun LauncherRoot(resumeRev: Int) {
             if (held > 0) {
                 Text(
                     "$held notification${if (held == 1) "" else "s"} held",
-                    Modifier.padding(top = 4.dp).combinedClickable(onClick = { openAway(2) }),
+                    Modifier.padding(top = 4.dp).combinedClickable(role = androidx.compose.ui.semantics.Role.Button, onClick = { openAway(2) }),
                     color = Dim, fontSize = 16.sp,
                 )
             }
             if (focus) {
                 Text(
                     "focus on · unlock",
-                    Modifier.padding(top = 4.dp).combinedClickable(onClick = { openAway(0) }),
+                    Modifier.padding(top = 4.dp).combinedClickable(role = androidx.compose.ui.semantics.Role.Button, onClick = { openAway(0) }),
                     color = Dim, fontSize = 16.sp,
                 )
             }
@@ -378,8 +399,8 @@ fun LauncherRoot(resumeRev: Int) {
             if (BlockerService.instance == null) {
                 Text(
                     "timer paused · Away service not running · fix",
-                    Modifier.padding(top = 4.dp).combinedClickable(onClick = {
-                        ctx.startActivity(Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                    Modifier.padding(top = 4.dp).combinedClickable(role = androidx.compose.ui.semantics.Role.Button, onClick = {
+                        safeStart(ctx, Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS))
                     }),
                     color = Color(0xFFFFB4AB), fontSize = 16.sp,
                 )
@@ -392,7 +413,7 @@ fun LauncherRoot(resumeRev: Int) {
                     Text("Swipe up for apps.\nLong-press an app there to pin it.", color = Dim, fontSize = 16.sp)
                 }
                 pinned.forEachIndexed { idx, app ->
-                    val d = Prefs.delays[app.pkg] ?: 0
+                    val d = delays[app.pkg] ?: 0
                     PressableText(
                         Apps.displayName(app, renames) + if (d > 0) " ·${d}s" else "",
                         modifier = Modifier.staggerIn(4 + idx),
@@ -643,7 +664,12 @@ private fun PressableText(
         label,
         modifier.fillMaxWidth()
             .graphicsLayer { scaleX = scale; scaleY = scale; alpha = a; transformOrigin = TransformOrigin(0f, 0.5f) }
-            .combinedClickable(interactionSource = src, indication = null, onClick = onClick, onLongClick = onLong)
+            .combinedClickable(
+                interactionSource = src, indication = null,
+                onClickLabel = "Open", onLongClickLabel = "App options",
+                role = androidx.compose.ui.semantics.Role.Button,
+                onClick = onClick, onLongClick = onLong,
+            )
             .padding(vertical = 10.dp),
         fontSize = fontSize,
     )
