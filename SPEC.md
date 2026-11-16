@@ -5,7 +5,7 @@
 ## 1. Instant block, no preview, quit
 - AccessibilityService detects a blocked app opening, immediately goes Home, and covers the screen with an opaque overlay so no app content is visible.
 - Then kills the app's background process (`killBackgroundProcesses`) so it cold-starts next time. True force-stop is not possible on Android.
-- Blocked list is user-editable (Instagram, TikTok, X, YouTube, Reddit by default). Phone, Messages, Maps, Settings are never blocked.
+- Blocked list is user-editable (Instagram, TikTok, X, YouTube, Reddit by default). Phone, Messages, Maps, Settings, Contacts and the Play Store are never blocked.
 - Blocking is on or off via a manual toggle plus one daily schedule (start/end time).
 - Unlock: open this app, wait a 30 second countdown, then blocking pauses for 10 minutes.
 
@@ -18,12 +18,12 @@
 - During focus, suppress all notifications and store them.
 - Classify each as urgent or not with a cheap LLM (Claude Haiku 5.5, `claude-haiku-5-5`):
   1. Skip the LLM for obvious cases: calls, alarms, OTP/2FA = urgent; known promo/social-like categories = not urgent.
-  2. Everything else goes to Haiku with a short fixed prompt. Input: app name, sender, title, text (truncated to ~300 chars), plus your VIP contact names. Output: strict JSON `{"urgent": bool, "reason": "<8 words"}`, `max_tokens` ~40, temperature 0.
+  2. Everything else goes to Haiku with a short fixed prompt. Input: app name, sender, title, text (truncated to ~300 chars), plus your VIP contact names. Output: compact JSON `{"urgent": bool, "reason": "<at most 8 words>"}`, `max_tokens` 128 (thinking disabled on Anthropic; temperature 0 on OpenRouter, default model `openai/gpt-4o-mini`).
   3. Prompt defines urgent as: needs a human response or action within about an hour, or time-sensitive money/safety/travel/health. Marketing, social activity, and news are never urgent.
-  4. Fail-safe: on timeout (3s), no network, or bad JSON, treat as urgent if sender is a VIP, otherwise queue to digest and retry once.
+  4. Fail-safe: on timeout (3s connect; 3s read on Anthropic, 5s on OpenRouter), no network, bad JSON or the daily cap, the notification is held as not urgent. VIPs are already caught by the on-device rules before any AI call; there is no retry.
 - Urgent: re-post as a distinct high-priority alert showing the reason. Everything else goes to a digest screen.
-- Cost/latency control: classify at most once per notification, dedupe identical text, batch bursts from the same chat into one call, cap daily calls.
-- Privacy: notification text is sent to the API. Redact phone numbers, numbers 4+ digits, emails, and links before sending; never send notifications from a user-chosen "private apps" list (banking, health by default); no logging of content. Feature is opt-in with a clear disclosure.
+- Cost/latency control: classify at most once per notification, cache verdicts for identical redacted text (last 200), cap at 200 calls a day.
+- Privacy: notification text is sent to the API. Redact phone numbers, numbers 4+ digits, emails, and links before sending; never send notifications from a user-chosen "private apps" list (empty by default); on-device rule matches are never sent to the API; no logging of content. Feature is opt-in with a clear disclosure.
 - VIP names match whole words ("Mom" does not match "moment").
 - If Away's notifications are turned off, held notifications stay held (and in the digest) until they are turned on again.
 - If notification access is revoked, everything held is put back at once.
@@ -62,7 +62,7 @@
 Home (counter, on/off), Blocked apps + schedule, Digest, Permissions setup.
 
 ## Permissions
-Accessibility, Notification access, Display over other apps, Usage access, Contacts, Battery optimization exemption.
+Accessibility, Notification access, Usage access, Post notifications, Battery optimization exemption, Internet (only for the optional AI key).
 
 ## Milestones
 1. Spike: detect, go Home, overlay, measure flash on your phone.
@@ -71,7 +71,7 @@ Accessibility, Notification access, Display over other apps, Usage access, Conta
 4. Notification triage: capture/suppress/digest, then Haiku classifier with rule shortcuts.
 
 ## Cut from v1
-Usage limits, stats and streaks, second counter, on-device model, feedback learning, tiered strictness, location/NFC triggers, multiple sessions.
+Second counter, on-device model, feedback learning, tiered strictness, location/NFC triggers, multiple sessions.
 
 ## Main risks
 Android 14+ ignores `killBackgroundProcesses` for other apps, so "quit" is not possible there; the overlay plus Home action is the whole mechanism. YouTube may enter picture-in-picture. Recents may show a thumbnail of the blocked app. Notifications are visible briefly before being cancelled (DND filter not implemented).
