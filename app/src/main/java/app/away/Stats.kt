@@ -37,7 +37,7 @@ object Stats {
         if (!::sp.isInitialized) sp = ctx.getSharedPreferences("away_stats", Context.MODE_PRIVATE)
     }
 
-    private fun key(t: Long) = SimpleDateFormat("yyyyMMdd", Locale.US).format(Date(t))
+    private fun key(t: Long) = StatsDays.key(t)
 
     private fun all(): JSONObject = runCatching { JSONObject(sp.getString("days", "{}")) }.getOrDefault(JSONObject())
 
@@ -49,8 +49,7 @@ object Stats {
         change(d)
         days.put(k, d)
         // Keep three weeks; yyyyMMdd keys sort as dates.
-        val oldest = key(now - 21L * 24 * 60 * 60_000)
-        days.keys().asSequence().toList().filter { it < oldest }.forEach { days.remove(it) }
+        StatsDays.expired(days.keys().asSequence().toList(), now).forEach { days.remove(it) }
         sp.edit().putString("days", days.toString()).apply()
         version.intValue++
     }
@@ -80,17 +79,34 @@ object Stats {
     /** The last [n] calendar days, oldest first, today last. Days with no data are zero. */
     fun lastDays(n: Int, now: Long = System.currentTimeMillis()): List<Day> {
         val days = all()
+        return StatsDays.starts(n, now).map { start ->
+            val d = days.optJSONObject(StatsDays.key(start)) ?: JSONObject()
+            Day(start, d.optInt("opens"), d.optInt("blocked"), d.optInt("pickups"), d.optLong("gapSum"), d.optLong("longest"))
+        }
+    }
+}
+
+/** Pure calendar math for [Stats], kept free of Android and org.json so it can be unit tested. */
+object StatsDays {
+    const val KEEP_DAYS = 21
+
+    /** Local calendar day of [t] as yyyyMMdd. */
+    fun key(t: Long): String = SimpleDateFormat("yyyyMMdd", Locale.US).format(Date(t))
+
+    /** Local-midnight start of each of the last [n] days, oldest first, today last. DST-safe. */
+    fun starts(n: Int, now: Long): List<Long> {
         val cal = Calendar.getInstance().apply {
             timeInMillis = now
             set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
             add(Calendar.DAY_OF_YEAR, -(n - 1))
         }
-        return (0 until n).map {
-            val start = cal.timeInMillis
-            val d = days.optJSONObject(key(start)) ?: JSONObject()
-            cal.add(Calendar.DAY_OF_YEAR, 1)
-            Day(start, d.optInt("opens"), d.optInt("blocked"), d.optInt("pickups"), d.optLong("gapSum"), d.optLong("longest"))
-        }
+        return (0 until n).map { cal.timeInMillis.also { cal.add(Calendar.DAY_OF_YEAR, 1) } }
+    }
+
+    /** Keys for days more than [KEEP_DAYS] calendar days before [now]. */
+    fun expired(keys: Collection<String>, now: Long): List<String> {
+        val oldest = key(Calendar.getInstance().apply { timeInMillis = now; add(Calendar.DAY_OF_YEAR, -KEEP_DAYS) }.timeInMillis)
+        return keys.filter { it < oldest }
     }
 }
 

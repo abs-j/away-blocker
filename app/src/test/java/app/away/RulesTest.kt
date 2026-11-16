@@ -63,4 +63,32 @@ class RulesTest {
         assertEquals("1h 0m", Blocking.formatDuration(60 * 60_000L))
         assertEquals("13h 20m", Blocking.formatDuration((13 * 60 + 20) * 60_000L))
     }
+
+    @Test
+    fun sameStartAndEndNeverRuns() {
+        val s = 9 * 60
+        assertFalse(Blocking.inWindow(0, s, s))
+        assertFalse(Blocking.inWindow(s, s, s))
+        assertFalse(Blocking.inWindow(23 * 60 + 59, s, s))
+    }
+
+    @Test
+    fun windowEndingAtMidnight() {
+        assertTrue(Blocking.inWindow(23 * 60 + 59, 22 * 60, 0))
+        assertTrue(Blocking.inWindow(22 * 60, 22 * 60, 0))
+        assertFalse(Blocking.inWindow(0, 22 * 60, 0))
+        assertFalse(Blocking.inWindow(21 * 60 + 59, 22 * 60, 0))
+    }
+
+    @Test
+    fun windowStartingAtMidnight() {
+        assertTrue(Blocking.inWindow(0, 0, 60))
+        assertFalse(Blocking.inWindow(60, 0, 60))
+    }
+
+    @Test
+    fun durationRoundsDown() {
+        assertEquals("0m", Blocking.formatDuration(59_999L))
+        assertEquals("24h 0m", Blocking.formatDuration(24 * 3_600_000L))
+    }
 }

@@ -8,11 +8,11 @@ Away is an Android app that blocks the apps that pull you in, holds notification
 
 - **Focus.** One switch, an optional daily schedule, and two choices: hide and block your distracting apps, and hold notifications. Need an app? Wait 30 seconds and it unlocks for 10 minutes.
 - **Quiet notifications.** During Focus, notifications wait in a digest and come back when Focus ends, even if your phone restarts. Urgent ones still come through: verification codes, people you mark as VIPs, calls to call back, emergencies, travel changes and security alerts.
-- **Optional AI triage.** Add your own Anthropic or OpenRouter key to judge everything the rules do not catch.
+- **Optional AI triage.** Add your own Anthropic or OpenRouter key to judge everything the rules do not catch. It is capped at 200 checks a day, and if the AI cannot be reached the notification simply waits in the digest.
 - **A calm home screen.** Time since you last opened a distracting app, with a little encouragement, a few pinned apps as text, and instant search. Distracting apps disappear during Focus.
 - **Lock screen timer.** How long since you last used your phone, shown only once it has sat untouched for a time you choose (default 1 hour).
 - **Unlock pause.** A calm 5 second pause after you unlock, showing your streak, so you can decide whether you really want to go in. Off, every unlock, Focus hours only, or only when you have a streak.
-- **Screen time.** Per-app time today, a 7-day chart, and daily limits that block an app until midnight. Phone, Messages, Maps and Settings are never limited. Away suggests adding apps you use a lot to your distracting list.
+- **Screen time.** Per-app time today, a 7-day chart, and daily limits that block an app until midnight. Phone, Messages, Maps, Settings, Contacts and the Play Store are never limited. Away suggests adding apps you use a lot to your distracting list.
 - **Let a chat through.** From the digest, let one chat (or a whole app) through Focus for 30 minutes, an hour, four hours or always.
 - **Weekly stats.** Distracting-app opens per day, blocked attempts, your longest stretch away and how often you pick up your phone.
 
