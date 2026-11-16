@@ -253,7 +253,7 @@ object Prefs {
     // Launcher
     private fun getList(k: String): List<String> {
         return runCatching {
-            val a = JSONArray(sp.getString(k, "[]"))
+            val a = JSONArray(sp.getString(k, "[]") ?: "[]")
             (0 until a.length()).map { a.getString(it) }
         }.getOrDefault(emptyList())
     }
