@@ -23,7 +23,10 @@
   4. Fail-safe: on timeout (3s), no network, or bad JSON, treat as urgent if sender is a VIP, otherwise queue to digest and retry once.
 - Urgent: re-post as a distinct high-priority alert showing the reason. Everything else goes to a digest screen.
 - Cost/latency control: classify at most once per notification, dedupe identical text, batch bursts from the same chat into one call, cap daily calls.
-- Privacy: notification text is sent to the API. Redact numbers 4+ digits, emails, and links before sending; never send notifications from a user-chosen "private apps" list (banking, health by default); no logging of content. Feature is opt-in with a clear disclosure.
+- Privacy: notification text is sent to the API. Redact phone numbers, numbers 4+ digits, emails, and links before sending; never send notifications from a user-chosen "private apps" list (banking, health by default); no logging of content. Feature is opt-in with a clear disclosure.
+- VIP names match whole words ("Mom" does not match "moment").
+- If Away's notifications are turned off, held notifications stay held (and in the digest) until they are turned on again.
+- If notification access is revoked, everything held is put back at once.
 - API key: entered by you in settings, stored in Android Keystore-backed encrypted storage. Never hardcoded in the APK. (A small proxy server is the upgrade if this is ever distributed.)
 - No on-device model and no learning loop in v1.
 

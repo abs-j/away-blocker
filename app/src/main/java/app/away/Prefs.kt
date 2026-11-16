@@ -252,16 +252,20 @@ object Prefs {
 
     // Launcher
     private fun getList(k: String): List<String> {
-        val a = JSONArray(sp.getString(k, "[]"))
-        return (0 until a.length()).map { a.getString(it) }
+        return runCatching {
+            val a = JSONArray(sp.getString(k, "[]"))
+            (0 until a.length()).map { a.getString(it) }
+        }.getOrDefault(emptyList())
     }
 
     private fun putList(k: String, v: Collection<String>) =
         sp.edit().putString(k, JSONArray(v.toList()).toString()).apply()
 
     private fun getMap(k: String): Map<String, String> {
-        val o = JSONObject(sp.getString(k, "{}"))
-        return o.keys().asSequence().associateWith { o.getString(it) }
+        return runCatching {
+            val o = JSONObject(sp.getString(k, "{}") ?: "{}")
+            o.keys().asSequence().associateWith { o.getString(it) }
+        }.getOrDefault(emptyMap())
     }
 
     private fun putMap(k: String, v: Map<String, String>) =
@@ -303,9 +307,11 @@ object Prefs {
 
     @Synchronized
     fun digest(): List<DigestItem> {
-        val arr = JSONArray(sp.getString("digest", "[]"))
+        val arr = runCatching { JSONArray(sp.getString("digest", "[]")) }.getOrNull() ?: return emptyList()
         val cutoff = System.currentTimeMillis() - DIGEST_KEEP_MS
-        return (0 until arr.length()).map { DigestItem.from(arr.getJSONObject(it)) }.filter { it.time >= cutoff }
+        return (0 until arr.length())
+            .mapNotNull { runCatching { DigestItem.from(arr.getJSONObject(it)) }.getOrNull() }
+            .filter { it.time >= cutoff }
     }
 
     private fun saveDigest(list: List<DigestItem>) {

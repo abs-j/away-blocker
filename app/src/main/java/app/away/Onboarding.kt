@@ -60,6 +60,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
@@ -111,7 +114,11 @@ fun Onboarding(onDone: () -> Unit) {
     androidx.compose.material3.Surface(color = cs.surface, modifier = Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize().systemBarsPadding().padding(horizontal = 24.dp)) {
         // Progress dots.
-        Row(Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 8.dp), horizontalArrangement = Arrangement.Center) {
+        Row(
+            Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 8.dp)
+                .clearAndSetSemantics { contentDescription = "Step ${step + 1} of $STEPS" },
+            horizontalArrangement = Arrangement.Center,
+        ) {
             repeat(STEPS) { i ->
                 Box(
                     Modifier.padding(horizontal = 3.dp).height(6.dp).width(if (i == step) 22.dp else 6.dp)
@@ -346,7 +353,7 @@ private fun Numbered(n: Int, text: String) {
 @Composable
 private fun StatusRow(label: String, ok: Boolean) {
     val cs = MaterialTheme.colorScheme
-    Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().semantics(mergeDescendants = true) {}.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
         if (ok) {
             Icon(Icons.Filled.CheckCircle, null, tint = cs.primary, modifier = Modifier.size(22.dp))
         } else {
@@ -362,7 +369,7 @@ private fun StatusRow(label: String, ok: Boolean) {
 private fun PickApps() {
     val ctx = LocalContext.current
     val cs = MaterialTheme.colorScheme
-    val apps = remember { Apps.loadAll(ctx).sortedBy { it.label.lowercase() } }
+    val apps = rememberInstalledApps()
     var blocked by remember { mutableStateOf(Prefs.blocked) }
     val initial = remember { Prefs.blocked }
     var q by remember { mutableStateOf("") }

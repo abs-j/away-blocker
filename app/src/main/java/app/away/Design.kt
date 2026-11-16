@@ -16,6 +16,9 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Box
@@ -248,10 +251,11 @@ fun GlassNav(pager: PagerState, items: List<NavItem>, onSelect: (Int) -> Unit) {
                     Column(
                         Modifier.weight(1f).fillMaxHeight().clickable(
                             interactionSource = remember { MutableInteractionSource() }, indication = null,
+                            role = Role.Tab,
                         ) {
                             haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                             onSelect(i)
-                        },
+                        }.semantics { selected = sel > 0.5f },
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = androidx.compose.foundation.layout.Arrangement.Center,
                     ) {

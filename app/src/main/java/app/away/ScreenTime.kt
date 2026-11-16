@@ -73,14 +73,34 @@ object UsageTracker {
     // Cached for limit checks, which run every few seconds.
     @Volatile private var cache: Map<String, Long> = emptyMap()
     @Volatile private var cachedAt = 0L
+    @Volatile private var cachedDay = 0L
+    private val refreshing = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val worker by lazy {
+        java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "away-usage").apply { isDaemon = true } }
+    }
 
     fun todayCached(now: Long = System.currentTimeMillis()): Map<String, Long> {
         if (!::app.isInitialized) return emptyMap()
-        if (now - cachedAt > 15_000) {
-            cachedAt = now
-            cache = today(app, now)
+        val day = dayStart(now)
+        when (UsageCachePlan.plan(now, cachedAt, cachedDay, day, 15_000L)) {
+            UsageCachePlan.Step.LOAD_NOW -> { cache = today(app, now); cachedAt = now; cachedDay = day }
+            UsageCachePlan.Step.NEW_DAY -> { cache = emptyMap(); cachedDay = day; refreshAsync() }
+            UsageCachePlan.Step.REFRESH -> refreshAsync()
+            UsageCachePlan.Step.FRESH -> {}
         }
         return cache
+    }
+
+    private fun refreshAsync() {
+        if (!refreshing.compareAndSet(false, true)) return
+        worker.execute {
+            try {
+                val t = System.currentTimeMillis()
+                cache = today(app, t); cachedAt = t; cachedDay = dayStart(t)
+            } finally {
+                refreshing.set(false)
+            }
+        }
     }
 
     @Volatile private var neverCache: Set<String>? = null
@@ -114,6 +134,18 @@ object UsageTracker {
         if (isNeverBlock(pkg)) return false
         val limit = Prefs.limits[pkg] ?: return false
         return (todayCached(now)[pkg] ?: 0L) >= limit * 60_000L
+    }
+}
+
+/** Decides how the today-usage cache is refreshed; pure so it can be unit tested. */
+object UsageCachePlan {
+    enum class Step { FRESH, LOAD_NOW, NEW_DAY, REFRESH }
+
+    fun plan(now: Long, cachedAt: Long, cachedDay: Long, today: Long, ttl: Long): Step = when {
+        cachedAt == 0L -> Step.LOAD_NOW
+        cachedDay != today -> Step.NEW_DAY
+        now - cachedAt > ttl -> Step.REFRESH
+        else -> Step.FRESH
     }
 }
 

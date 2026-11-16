@@ -24,10 +24,21 @@ Reply with ONLY compact JSON: {"urgent": true|false, "reason": "<at most 8 words
 
     private val EMAIL = Regex("[\\w.+-]+@[\\w-]+(\\.[\\w-]+)+")
     private val URL_RE = Regex("https?://\\S+|www\\.\\S+")
+    private val PHONE = Regex("(?<!\\w)\\+?\\d(?:[ ()-]{0,2}\\d){6,14}(?!\\w)")
     private val NUM = Regex("\\d{4,}")
 
     fun redact(s: String): String =
-        s.replace(EMAIL, "[email]").replace(URL_RE, "[link]").replace(NUM, "[num]").take(300)
+        s.replace(EMAIL, "[email]").replace(URL_RE, "[link]").replace(PHONE, "[num]")
+            .replace(NUM, "[num]").take(300)
+
+    /** The outermost {...} in a model reply, or null when there is none. */
+    fun extractJson(raw: String): String? {
+        val s = raw.indexOf('{')
+        val e = raw.lastIndexOf('}')
+        return if (s < 0 || e <= s) null else raw.substring(s, e + 1)
+    }
+
+    private fun scrub(s: String, key: String) = if (key.isBlank()) s else s.replace(key, "[key]")
 
     private const val OR_DEFAULT_MODEL = "openai/gpt-4o-mini"
 
@@ -42,9 +53,10 @@ Reply with ONLY compact JSON: {"urgent": true|false, "reason": "<at most 8 words
                     .put(JSONObject().put("role", "system").put("content", SYSTEM))
                     .put(JSONObject().put("role", "user").put("content", user)),
             )
+        var c: HttpURLConnection? = null
         return try {
             Prefs.incCalls()
-            val c = URL("https://openrouter.ai/api/v1/chat/completions").openConnection() as HttpURLConnection
+            c = URL("https://openrouter.ai/api/v1/chat/completions").openConnection() as HttpURLConnection
             c.requestMethod = "POST"
             c.connectTimeout = 3000
             c.readTimeout = 5000
@@ -55,7 +67,7 @@ Reply with ONLY compact JSON: {"urgent": true|false, "reason": "<at most 8 words
             c.outputStream.use { it.write(body.toString().toByteArray()) }
             if (c.responseCode !in 200..299) {
                 val err = c.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty().take(200)
-                Prefs.lastError = "OpenRouter HTTP ${c.responseCode}: $err"
+                Prefs.lastError = scrub("OpenRouter HTTP ${c.responseCode}: $err", apiKey)
                 return null
             }
             val root = JSONObject(c.inputStream.bufferedReader().use { it.readText() })
@@ -65,14 +77,21 @@ Reply with ONLY compact JSON: {"urgent": true|false, "reason": "<at most 8 words
                 Prefs.lastError = "OpenRouter: no usable reply"
                 return null
             }
-            val json = JSONObject(raw.substring(raw.indexOf('{'), raw.lastIndexOf('}') + 1))
+            val extracted = extractJson(raw)
+            if (extracted == null) {
+                Prefs.lastError = "No JSON in reply"
+                return null
+            }
+            val json = JSONObject(extracted)
             val v = Verdict(json.getBoolean("urgent"), json.optString("reason", "").take(60))
             synchronized(cache) { cache[cacheKey] = v }
             Prefs.lastError = ""
             v
         } catch (e: Exception) {
-            Prefs.lastError = e.javaClass.simpleName + ": " + (e.message ?: "").take(100)
+            Prefs.lastError = scrub(e.javaClass.simpleName + ": " + (e.message ?: "").take(100), apiKey)
             null
+        } finally {
+            c?.disconnect()
         }
     }
 
@@ -98,9 +117,10 @@ Reply with ONLY compact JSON: {"urgent": true|false, "reason": "<at most 8 words
             .put("system", SYSTEM)
             .put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", user)))
 
+        var c: HttpURLConnection? = null
         return try {
             Prefs.incCalls()
-            val c = URL("https://api.anthropic.com/v1/messages").openConnection() as HttpURLConnection
+            c = URL("https://api.anthropic.com/v1/messages").openConnection() as HttpURLConnection
             c.requestMethod = "POST"
             c.connectTimeout = 3000
             c.readTimeout = 3000
@@ -111,7 +131,7 @@ Reply with ONLY compact JSON: {"urgent": true|false, "reason": "<at most 8 words
             c.outputStream.use { it.write(body.toString().toByteArray()) }
             if (c.responseCode !in 200..299) {
                 val err = c.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty().take(200)
-                Prefs.lastError = "HTTP ${c.responseCode}: $err"
+                Prefs.lastError = scrub("HTTP ${c.responseCode}: $err", apiKey)
                 return null
             }
             val resp = c.inputStream.bufferedReader().use { it.readText() }
@@ -127,14 +147,21 @@ Reply with ONLY compact JSON: {"urgent": true|false, "reason": "<at most 8 words
                 Prefs.lastError = "No usable reply (stop_reason=$stop)"
                 return null
             }
-            val json = JSONObject(raw.substring(raw.indexOf('{'), raw.lastIndexOf('}') + 1))
+            val extracted = extractJson(raw)
+            if (extracted == null) {
+                Prefs.lastError = "No JSON in reply"
+                return null
+            }
+            val json = JSONObject(extracted)
             val v = Verdict(json.getBoolean("urgent"), json.optString("reason", "").take(60))
             synchronized(cache) { cache[cacheKey] = v }
             Prefs.lastError = ""
             v
         } catch (e: Exception) {
-            Prefs.lastError = e.javaClass.simpleName + ": " + (e.message ?: "").take(100)
+            Prefs.lastError = scrub(e.javaClass.simpleName + ": " + (e.message ?: "").take(100), apiKey)
             null
+        } finally {
+            c?.disconnect()
         }
     }
 }

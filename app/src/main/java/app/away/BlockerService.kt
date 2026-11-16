@@ -103,9 +103,9 @@ class BlockerService : AccessibilityService() {
     private fun preempt(event: AccessibilityEvent) {
         val pkg = event.packageName?.toString() ?: return
         if (pkg == packageName || quitting) return
-        if (!pkg.contains("launcher", ignoreCase = true) && pkg != homePackage()) return
         val now = System.currentTimeMillis()
         if (!Blocking.isActive(now) || Blocking.isPaused(now)) return
+        if (!pkg.contains("launcher", ignoreCase = true) && pkg != homePackageCached(now)) return
         // Cheap checks only (no binder calls): the label cache is refreshed off the hot path.
         val tapped = listOfNotNull(event.contentDescription, *event.text.toTypedArray())
             .map { it.toString().trim().lowercase() }.filter { it.isNotEmpty() }
@@ -116,6 +116,14 @@ class BlockerService : AccessibilityService() {
         showShield()
         handler.removeCallbacks(preemptHide)
         handler.postDelayed(preemptHide, 3000) // if no block follows (launch failed), drop it
+    }
+
+    @Volatile private var homePkg: String? = null
+    private var homePkgAt = 0L
+
+    private fun homePackageCached(now: Long): String? {
+        if (now - homePkgAt > 60_000L) { homePkgAt = now; homePkg = homePackage() }
+        return homePkg
     }
 
     private fun homePackage(): String? = packageManager.resolveActivity(
@@ -150,6 +158,8 @@ class BlockerService : AccessibilityService() {
         if (instance === this) instance = null
         runCatching { unregisterReceiver(screenReceiver) }
         handler.removeCallbacksAndMessages(null)
+        if (::wm.isInitialized) pauseView?.let { v -> runCatching { wm.removeViewImmediate(v) } }
+        pauseView = null
         hidePause()
         shield?.let { runCatching { wm.removeView(it) } }
         shield = null
