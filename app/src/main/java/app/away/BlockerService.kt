@@ -26,6 +26,7 @@ import android.os.PowerManager
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewTreeObserver
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.graphics.Typeface
@@ -529,16 +530,26 @@ class BlockerService : AccessibilityService() {
             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
         ).apply {
-            format = PixelFormat.OPAQUE
+            // Translucent so the fade-in is real: an opaque window ignores the view's alpha and cuts in.
+            format = PixelFormat.TRANSLUCENT
             layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
         }
         if (runCatching { wm.addView(root, p) }.isFailure) return
         pauseView = root
         pauseLeft = 5
-        root.animate().alpha(1f).setDuration(700).start()
-        root.findViewWithTag<TextView>("count")?.let { popDigit(it, "5") }
-        handler.removeCallbacks(pauseTick)
-        handler.postDelayed(pauseTick, 1000)
+        // Start the fade and the first digit only once the first frame is drawn, so building the
+        // window cannot eat the start of the animation and make it jump.
+        root.viewTreeObserver.addOnPreDrawListener(object : ViewTreeObserver.OnPreDrawListener {
+            override fun onPreDraw(): Boolean {
+                root.viewTreeObserver.removeOnPreDrawListener(this)
+                if (pauseView !== root) return true
+                root.animate().alpha(1f).setDuration(700).setInterpolator(DecelerateInterpolator()).withLayer().start()
+                root.findViewWithTag<TextView>("count")?.let { popDigit(it, "5") }
+                handler.removeCallbacks(pauseTick)
+                handler.postDelayed(pauseTick, 1000)
+                return true
+            }
+        })
         // Never trap the phone: the overlay removes itself after two minutes whatever happens.
         handler.removeCallbacks(pauseFailsafe)
         handler.postDelayed(pauseFailsafe, 120_000)
@@ -550,7 +561,7 @@ class BlockerService : AccessibilityService() {
         pauseBreath?.cancel(); pauseBreath = null
         pauseView?.let { v ->
             // Fade out rather than vanish; the window is removed once the fade ends.
-            v.animate().alpha(0f).setDuration(320).withEndAction { runCatching { wm.removeView(v) } }.start()
+            v.animate().alpha(0f).setDuration(320).withLayer().withEndAction { runCatching { wm.removeView(v) } }.start()
         }
         pauseView = null
     }
